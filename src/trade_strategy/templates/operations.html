@@ -1,0 +1,183 @@
+{% extends "base.html" %}
+
+{% block title %}{{ ticker.display_symbol }} {{ strategy.label }} Operations - Trade Strategy{% endblock %}
+
+{% block content %}
+  <section class="page-heading">
+    <div>
+      <h1>{{ ticker.display_symbol }} Operations</h1>
+      <p>{{ strategy.label }} history using the currently saved strategy parameters.</p>
+    </div>
+    <div class="button-row">
+      <a
+        class="button-link"
+        href="{{ url_for('strategy_backtest', ticker_id=ticker.id, strategy_name=strategy_name) }}"
+      >Back test</a>
+      <a class="button-link secondary" href="{{ url_for('dashboard') }}">Back to dashboard</a>
+    </div>
+  </section>
+
+  <section class="panel operation-summary">
+    <div>
+      <strong>{{ strategy.label }}</strong>
+      <span>{{ strategy.description }}</span>
+    </div>
+    <div>
+      <strong>{{ operations|length }}</strong>
+      <span>historical operations</span>
+    </div>
+    <div>
+      <strong>$10,000.00</strong>
+      <span>initial balance</span>
+    </div>
+    <div>
+      <strong>{{ "Enabled" if config.enabled else "Disabled" }}</strong>
+      <span>dashboard status</span>
+    </div>
+  </section>
+
+  <section class="panel chart-panel">
+    <div class="panel-heading">
+      <div>
+        <h2>Last Year Price</h2>
+        <p>Close price with strategy operations plotted at their signal price.</p>
+      </div>
+    </div>
+    {% if chart.has_data %}
+      <div class="chart-wrap">
+        <svg
+          class="price-chart"
+          viewBox="0 0 {{ chart.width }} {{ chart.height }}"
+          role="img"
+          aria-label="Last year close price and operation markers"
+        >
+          <line class="chart-grid" x1="54" y1="20" x2="54" y2="246"></line>
+          <line class="chart-grid" x1="54" y1="246" x2="982" y2="246"></line>
+          <text class="chart-label" x="10" y="24">{{ "%.2f"|format(chart.max_price) }}</text>
+          <text class="chart-label" x="10" y="248">{{ "%.2f"|format(chart.min_price) }}</text>
+          <text class="chart-label" x="54" y="272">{{ chart.start_date }}</text>
+          <text class="chart-label chart-label-end" x="982" y="272">{{ chart.end_date }}</text>
+          <polyline class="chart-line" points="{{ chart.line_points }}"></polyline>
+          {% if chart.moving_average_points %}
+            <polyline
+              class="chart-line moving-average-line"
+              points="{{ chart.moving_average_points }}"
+            ></polyline>
+          {% endif %}
+          {% for line in chart.ema_lines %}
+            <polyline
+              class="chart-line {{ line.class }}"
+              points="{{ line.points }}"
+            ></polyline>
+          {% endfor %}
+          {% for dot in chart.dots %}
+            <circle class="chart-dot {{ dot.class }}" cx="{{ dot.x }}" cy="{{ dot.y }}" r="5">
+              <title>{{ dot.label }}</title>
+            </circle>
+          {% endfor %}
+        </svg>
+      </div>
+      <div class="chart-legend">
+        <span><i class="legend-line"></i>Close</span>
+        {% if chart.moving_average_points %}
+          <span><i class="legend-line moving-average"></i>MA {{ chart.moving_average_window }}</span>
+        {% endif %}
+        {% for line in chart.ema_lines %}
+          <span><i class="legend-line {{ line.class }}"></i>{{ line.label }}</span>
+        {% endfor %}
+        <span><i class="legend-dot long"></i>Long operation</span>
+        <span><i class="legend-dot short"></i>Short operation</span>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <h2>No chart data</h2>
+        <p>There is no saved close-price history for this ticker yet.</p>
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="panel">
+    <div class="panel-heading">
+      <div>
+        <h2>Operation History</h2>
+        <p>Operations are reconstructed from stored daily candles and current strategy settings.</p>
+      </div>
+    </div>
+
+    {% if operations %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th>Direction</th>
+              <th>Operation</th>
+              <th>Close</th>
+              <th>Signal</th>
+              <th>Position</th>
+              <th>Notional</th>
+              <th>Realized P&amp;L</th>
+              <th>Balance</th>
+              <th>Reason</th>
+              <th>Metrics</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for operation in operations|reverse %}
+              <tr>
+                <td><strong>{{ operation.trade_date }}</strong></td>
+                <td>
+                  <span class="signal {{ operation.signal_class }}">{{ operation.direction|upper }}</span>
+                </td>
+                <td>
+                  <strong>{{ operation.operation_label }}</strong>
+                </td>
+                <td><strong>{{ "%.4f"|format(operation.price) }}</strong></td>
+                <td><strong>{{ "%.4f"|format(operation.signal_price) }}</strong></td>
+                <td><strong>{{ "%.3f"|format(operation.position_size) }}</strong></td>
+                <td><strong>${{ "%.2f"|format(operation.position_notional) }}</strong></td>
+                <td>
+                  <strong class="{{ 'profit' if operation.realized_pnl > 0 else 'loss' if operation.realized_pnl < 0 else '' }}">
+                    ${{ "%.2f"|format(operation.realized_pnl) }}
+                  </strong>
+                </td>
+                <td><strong>${{ "%.2f"|format(operation.balance_after) }}</strong></td>
+                <td class="reason-cell">
+                  <span title="{{ operation.detail }}">{{ operation.detail }}</span>
+                </td>
+                <td class="metrics-cell">
+                  {% if operation.metrics %}
+                    {% set metrics = operation.metrics.items()|list %}
+                    <details class="metrics-details">
+                      <summary>
+                        <span>{{ metrics[0][0]|replace("_", " ") }}</span>
+                        <strong>{{ metrics[0][1] }}</strong>
+                      </summary>
+                      {% if metrics|length > 1 %}
+                        <dl>
+                          {% for name, value in metrics[1:] %}
+                            <div>
+                              <dt>{{ name|replace("_", " ") }}</dt>
+                              <dd>{{ value }}</dd>
+                            </div>
+                          {% endfor %}
+                        </dl>
+                      {% endif %}
+                    </details>
+                  {% else %}
+                    <span class="muted">No metrics</span>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <h2>No operations yet</h2>
+        <p>This strategy has not generated any entry, add, or exit operations from the saved history.</p>
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

@@ -1,0 +1,417 @@
+import sys
+import types
+
+import pandas as pd
+
+from trade_strategy import database
+from trade_strategy.common_settings import COMMON_CONFIG_NAME
+
+
+fake_market_data = types.ModuleType("trade_strategy.market_data")
+fake_market_data.download_history = lambda *args, **kwargs: pd.DataFrame()
+fake_market_data.fetch_current_price = lambda *args, **kwargs: None
+fake_market_data.fetch_current_prices = lambda *args, **kwargs: {}
+fake_market_data.fetch_metadata = lambda *args, **kwargs: None
+fake_market_data.normalize_symbol = lambda symbol, asset_type: (symbol, symbol)
+sys.modules["trade_strategy.market_data"] = fake_market_data
+
+from trade_strategy.app import (  # noqa: E402
+    create_app,
+    group_dashboard_rows,
+    parse_default_group_symbols,
+)
+
+
+def test_dashboard_groups_default_symbols_and_market_tabs():
+    rows = [
+        {
+            "ticker": {"display_symbol": "AAPL", "asset_type": "stock"},
+            "strategy_signals": {},
+        },
+        {
+            "ticker": {"display_symbol": "ETH", "asset_type": "crypto"},
+            "strategy_signals": {
+                "ema": {"operation_on_latest_candle": True},
+            },
+        },
+        {
+            "ticker": {"display_symbol": "QQQ", "asset_type": "stock"},
+            "strategy_signals": {
+                "turtle": {"operation_on_latest_candle": True},
+            },
+        },
+        {
+            "ticker": {"display_symbol": "DOGE", "asset_type": "crypto"},
+            "strategy_signals": {},
+        },
+        {
+            "ticker": {"display_symbol": "MSFT", "asset_type": "stock"},
+            "strategy_signals": {
+                "ema": {"operation_on_latest_candle": False},
+            },
+        },
+        {
+            "ticker": {"display_symbol": "BTC", "asset_type": "crypto"},
+            "strategy_signals": {},
+        },
+    ]
+
+    groups = group_dashboard_rows(rows, "btc, qqq, eth")
+
+    assert [group["label"] for group in groups] == [
+        "Default",
+        "Latest Operations",
+        "US-Stock",
+        "Crypto",
+    ]
+    assert [group["slug"] for group in groups] == [
+        "default",
+        "latest-operations",
+        "us-stock",
+        "crypto",
+    ]
+    assert [
+        row["ticker"]["display_symbol"] for row in groups[0]["rows"]
+    ] == ["BTC", "QQQ", "ETH"]
+    assert [
+        row["ticker"]["display_symbol"] for row in groups[1]["rows"]
+    ] == ["ETH", "QQQ"]
+    assert [
+        row["ticker"]["display_symbol"] for row in groups[2]["rows"]
+    ] == ["AAPL", "QQQ", "MSFT"]
+    assert [
+        row["ticker"]["display_symbol"] for row in groups[3]["rows"]
+    ] == ["ETH", "DOGE", "BTC"]
+
+
+def test_default_group_symbol_parser_normalizes_and_deduplicates():
+    assert parse_default_group_symbols(" btc, ETH, btc, sol ,, SPY ") == [
+        "BTC",
+        "ETH",
+        "SOL",
+        "SPY",
+    ]
+
+
+def test_strategy_settings_renders_and_saves_common_realtime_parameters(tmp_path):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": db_path,
+            "AUTO_REFRESH_ENABLED": False,
+        }
+    )
+    client = app.test_client()
+
+    response = client.get("/strategies")
+    assert response.status_code == 200
+    assert b"Common" in response.data
+    assert b"common.default_group_symbols" in response.data
+    assert b"value=\"BTC, ETH, SOL, QQQ, SPY\"" in response.data
+    assert b"common.enable_realtime_updates" in response.data
+    assert b"common.realtime_update_frequency" in response.data
+    assert b"common.daily_data_fetch_time" in response.data
+    assert b"value=\"00:01\"" in response.data
+    assert b"common.send_telegram_notifications" in response.data
+    assert b"common.telegram_bot_token" in response.data
+    assert b"common.telegram_chat_id" in response.data
+    assert b"value=\"300\"" in response.data
+
+    response = client.post(
+        "/strategies",
+        data={
+            "common.default_group_symbols": "QQQ, SPY, BTC",
+            "common.enable_realtime_updates": "on",
+            "common.realtime_update_frequency": "120",
+            "common.daily_data_fetch_time": "00:01",
+            "common.send_telegram_notifications": "on",
+            "common.telegram_bot_token": "123:abc",
+            "common.telegram_chat_id": "456",
+            "ema_crossover.enabled": "on",
+            "ema_crossover.fast_window": "3",
+            "ema_crossover.slow_window": "5",
+            "turtle_breakout.enabled": "on",
+            "turtle_breakout.entry_window": "20",
+            "turtle_breakout.exit_window": "10",
+            "turtle_breakout.atr_window": "20",
+            "turtle_breakout.exit_atr_ratio": "2.0",
+            "turtle_breakout.ma_window": "200",
+            "turtle_breakout.max_units": "4",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    config = database.list_strategy_configs(db_path)[COMMON_CONFIG_NAME]
+    assert config["params"]["default_group_symbols"] == "QQQ, SPY, BTC"
+    assert config["params"]["enable_realtime_updates"] is True
+    assert config["params"]["realtime_update_frequency"] == 120
+    assert config["params"]["daily_data_fetch_time"] == "00:01"
+    assert config["params"]["send_telegram_notifications"] is True
+    assert config["params"]["telegram_bot_token"] == "123:abc"
+
+    response = client.get("/strategies")
+    assert b"placeholder=\"******\"" in response.data
+    assert b"value=\"123:abc\"" not in response.data
+    assert config["params"]["telegram_chat_id"] == "456"
+
+    response = client.post(
+        "/strategies",
+        data={
+            "common.default_group_symbols": "QQQ, SPY, BTC",
+            "common.enable_realtime_updates": "on",
+            "common.realtime_update_frequency": "120",
+            "common.daily_data_fetch_time": "00:01",
+            "common.send_telegram_notifications": "on",
+            "common.telegram_bot_token": "",
+            "common.telegram_chat_id": "456",
+            "ema_crossover.enabled": "on",
+            "ema_crossover.fast_window": "3",
+            "ema_crossover.slow_window": "5",
+            "turtle_breakout.enabled": "on",
+            "turtle_breakout.entry_window": "20",
+            "turtle_breakout.exit_window": "10",
+            "turtle_breakout.atr_window": "20",
+            "turtle_breakout.exit_atr_ratio": "2.0",
+            "turtle_breakout.ma_window": "200",
+            "turtle_breakout.max_units": "4",
+        },
+        follow_redirects=False,
+    )
+
+    assert response.status_code == 302
+    config = database.list_strategy_configs(db_path)[COMMON_CONFIG_NAME]
+    assert config["params"]["telegram_bot_token"] == "123:abc"
+
+
+def test_dashboard_uses_cached_realtime_price_when_enabled(tmp_path):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": db_path,
+            "AUTO_REFRESH_ENABLED": False,
+        }
+    )
+    ticker_id = database.add_ticker("SPY", "SPY", "stock", path=db_path)
+    history = pd.DataFrame(
+        {
+            "Open": [100],
+            "High": [101],
+            "Low": [99],
+            "Close": [100],
+            "Adj Close": [100],
+            "Volume": [1000],
+        },
+        index=pd.date_range("2025-01-02", periods=1),
+    )
+    database.save_history(ticker_id, history, db_path)
+    database.save_current_price(ticker_id, 123.45, db_path)
+    database.update_strategy_config(
+        COMMON_CONFIG_NAME,
+        True,
+        {
+            "enable_realtime_updates": True,
+            "realtime_update_frequency": 300,
+        },
+        db_path,
+    )
+
+    response = app.test_client().get("/")
+
+    assert response.status_code == 200
+    assert b"123.45" in response.data
+    assert b"Updated" in response.data
+    assert b"role=\"tablist\"" in response.data
+    assert b"data-group-tab=\"default\"" in response.data
+    assert b"data-group-tab=\"latest-operations\"" in response.data
+    assert b"data-group-panel=\"latest-operations\"" in response.data
+    assert b"data-group-panel=\"us-stock\"" in response.data
+    assert b"hidden" in response.data
+
+
+def test_dashboard_links_tickers_to_yahoo_charts(tmp_path):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": db_path,
+            "AUTO_REFRESH_ENABLED": False,
+        }
+    )
+    spy_id = database.add_ticker("SPY", "SPY", "stock", path=db_path)
+    btc_id = database.add_ticker("BTC-USD", "BTC", "crypto", path=db_path)
+    history = pd.DataFrame(
+        {
+            "Open": [100],
+            "High": [101],
+            "Low": [99],
+            "Close": [100],
+            "Adj Close": [100],
+            "Volume": [1000],
+        },
+        index=pd.date_range("2025-01-02", periods=1),
+    )
+    database.save_history(spy_id, history, db_path)
+    database.save_history(btc_id, history, db_path)
+
+    response = app.test_client().get("/")
+
+    assert response.status_code == 200
+    assert b'href="https://finance.yahoo.com/chart/SPY"' in response.data
+    assert b'href="https://finance.yahoo.com/chart/BTC-USD"' in response.data
+    assert b'target="_blank"' in response.data
+    assert b'rel="noopener noreferrer"' in response.data
+
+
+def test_dashboard_marks_strategy_with_operation_on_latest_candle(tmp_path):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": db_path,
+            "AUTO_REFRESH_ENABLED": False,
+        }
+    )
+    ticker_id = database.add_ticker("SPY", "SPY", "stock", path=db_path)
+    history = pd.DataFrame(
+        {
+            "Open": [10, 9, 8, 9, 12],
+            "High": [10, 9, 8, 9, 12],
+            "Low": [10, 9, 8, 9, 12],
+            "Close": [10, 9, 8, 9, 12],
+            "Adj Close": [10, 9, 8, 9, 12],
+            "Volume": [1000] * 5,
+        },
+        index=pd.date_range(end=pd.Timestamp("2026-06-05"), periods=5),
+    )
+    database.save_history(ticker_id, history, db_path)
+    database.update_strategy_config(
+        "ema_crossover",
+        True,
+        {
+            "fast_window": 2,
+            "slow_window": 3,
+        },
+        db_path,
+    )
+    database.update_strategy_config("turtle_breakout", False, {}, db_path)
+
+    response = app.test_client().get("/")
+
+    assert response.status_code == 200
+    assert b"latest-operation-marker" in response.data
+    assert b"title=\"Operation on latest candle\"" in response.data
+    assert (
+        f'href="/tickers/{ticker_id}/strategies/ema_crossover/operations"'.encode()
+        in response.data
+    )
+    assert b'target="_blank"' in response.data
+    assert b'rel="noopener noreferrer"' in response.data
+
+
+def test_operations_page_renders_open_cycle_chart_dots(tmp_path):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": db_path,
+            "AUTO_REFRESH_ENABLED": False,
+        }
+    )
+
+    ticker_id = database.add_ticker(
+        "QQQ",
+        "QQQ",
+        "stock",
+        path=db_path,
+    )
+    history = pd.DataFrame(
+        {
+            "Open": range(100, 490),
+            "High": range(100, 490),
+            "Low": range(99, 489),
+            "Close": range(100, 490),
+            "Adj Close": range(100, 490),
+            "Volume": [1000] * 390,
+        },
+        index=pd.date_range("2025-05-12", periods=390),
+    )
+    database.save_history(ticker_id, history, db_path)
+    database.update_strategy_config(
+        "turtle_breakout",
+        True,
+        {
+            "entry_window": 3,
+            "exit_window": 2,
+            "atr_window": 3,
+            "exit_atr_ratio": 2.0,
+            "use_ma_filter": True,
+            "ma_window": 3,
+            "max_units": 4,
+        },
+        db_path,
+    )
+
+    response = app.test_client().get(
+        f"/tickers/{ticker_id}/strategies/turtle_breakout/operations"
+    )
+
+    assert response.status_code == 200
+    assert b"class=\"chart-dot long\"" in response.data
+    assert b"class=\"chart-line moving-average-line\"" in response.data
+    assert b"MA 3" in response.data
+    assert response.data.count(b"class=\"chart-dot long\"") == 4
+    assert b"class=\"metrics-cell\"" in response.data
+    assert b"class=\"metrics-details\"" in response.data
+    assert b"<summary>" in response.data
+
+
+def test_ema_operations_page_renders_fast_and_slow_ema_lines(tmp_path):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": db_path,
+            "AUTO_REFRESH_ENABLED": False,
+        }
+    )
+
+    ticker_id = database.add_ticker(
+        "SPY",
+        "SPY",
+        "stock",
+        path=db_path,
+    )
+    history = pd.DataFrame(
+        {
+            "Open": range(100, 130),
+            "High": range(101, 131),
+            "Low": range(99, 129),
+            "Close": range(100, 130),
+            "Adj Close": range(100, 130),
+            "Volume": [1000] * 30,
+        },
+        index=pd.date_range("2025-01-01", periods=30),
+    )
+    database.save_history(ticker_id, history, db_path)
+    database.update_strategy_config(
+        "ema_crossover",
+        True,
+        {
+            "fast_window": 3,
+            "slow_window": 5,
+        },
+        db_path,
+    )
+
+    response = app.test_client().get(
+        f"/tickers/{ticker_id}/strategies/ema_crossover/operations"
+    )
+
+    assert response.status_code == 200
+    assert b"class=\"chart-line fast-ema-line\"" in response.data
+    assert b"class=\"chart-line slow-ema-line\"" in response.data
+    assert b"Fast EMA 3" in response.data
+    assert b"Slow EMA 5" in response.data

@@ -1,0 +1,97 @@
+{% extends "base.html" %}
+
+{% block title %}{{ ticker.display_symbol }} {{ strategy.label }} Back Test - Trade Strategy{% endblock %}
+
+{% block content %}
+  <section class="page-heading">
+    <div>
+      <h1>{{ ticker.display_symbol }} Back Test</h1>
+      <p>{{ strategy.label }} yearly performance compared with buy and hold.</p>
+    </div>
+    <div class="button-row">
+      <a
+        class="button-link secondary"
+        href="{{ url_for('strategy_operations', ticker_id=ticker.id, strategy_name=strategy_name) }}"
+      >Operations</a>
+      <a class="button-link secondary" href="{{ url_for('dashboard') }}">Back to dashboard</a>
+    </div>
+  </section>
+
+  <section class="panel operation-summary">
+    <div>
+      <strong>{{ strategy.label }}</strong>
+      <span>current strategy</span>
+    </div>
+    <div>
+      <strong>${{ "%.2f"|format(result.strategy_final) }}</strong>
+      <span>strategy final equity</span>
+    </div>
+    <div>
+      <strong>${{ "%.2f"|format(result.buy_hold_final) }}</strong>
+      <span>buy and hold final equity</span>
+    </div>
+    <div>
+      <strong>{{ "%.2f"|format(result.strategy_total_return_pct - result.buy_hold_total_return_pct) }}%</strong>
+      <span>total difference</span>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-heading">
+      <div>
+        <h2>Yearly Performance</h2>
+        <p>Strategy equity uses generated operations and signal prices; buy and hold keeps the ticker from the first saved close.</p>
+      </div>
+    </div>
+
+    {% if result.yearly %}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Year</th>
+              <th>Strategy start</th>
+              <th>Strategy end</th>
+              <th>Strategy return</th>
+              <th>Buy hold start</th>
+              <th>Buy hold end</th>
+              <th>Buy hold return</th>
+              <th>Difference</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in result.yearly|reverse %}
+              <tr>
+                <td><strong>{{ row.year }}</strong></td>
+                <td>${{ "%.2f"|format(row.strategy_start) }}</td>
+                <td><strong>${{ "%.2f"|format(row.strategy_end) }}</strong></td>
+                <td>
+                  <strong class="{{ 'profit' if row.strategy_return_pct > 0 else 'loss' if row.strategy_return_pct < 0 else '' }}">
+                    {{ "%.2f"|format(row.strategy_return_pct) }}%
+                  </strong>
+                </td>
+                <td>${{ "%.2f"|format(row.buy_hold_start) }}</td>
+                <td><strong>${{ "%.2f"|format(row.buy_hold_end) }}</strong></td>
+                <td>
+                  <strong class="{{ 'profit' if row.buy_hold_return_pct > 0 else 'loss' if row.buy_hold_return_pct < 0 else '' }}">
+                    {{ "%.2f"|format(row.buy_hold_return_pct) }}%
+                  </strong>
+                </td>
+                <td>
+                  <strong class="{{ 'profit' if row.difference_pct > 0 else 'loss' if row.difference_pct < 0 else '' }}">
+                    {{ "%.2f"|format(row.difference_pct) }}%
+                  </strong>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty-state">
+        <h2>No back test data</h2>
+        <p>There is no saved price history for this ticker yet.</p>
+      </div>
+    {% endif %}
+  </section>
+{% endblock %}

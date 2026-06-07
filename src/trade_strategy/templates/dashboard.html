@@ -1,0 +1,237 @@
+{% extends "base.html" %}
+
+{% block title %}Dashboard - Trade Strategy{% endblock %}
+
+{% macro yahoo_chart_url(ticker) -%}
+https://finance.yahoo.com/chart/{{ ticker.symbol }}
+{%- endmacro %}
+
+{% macro ticker_table(rows) %}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Ticker</th>
+          <th>Market</th>
+          <th>Current price</th>
+          <th>Change %</th>
+          <th>Last candle</th>
+          <th>Signals</th>
+          <th class="actions">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+          {% set ticker = row.ticker %}
+          <tr>
+            <td>
+              <a
+                class="ticker-link"
+                href="{{ yahoo_chart_url(ticker) }}"
+                target="_blank"
+                rel="noopener noreferrer"
+              ><strong>{{ ticker.display_symbol }}</strong></a>
+              <span>{{ ticker.name or ticker.symbol }}</span>
+            </td>
+            <td>
+              <span class="market {{ ticker.asset_type }}">{{ ticker.asset_type }}</span>
+              {% if ticker.exchange %}<span>{{ ticker.exchange }}</span>{% endif %}
+            </td>
+            <td>
+              {% if row.current_price is not none %}
+                <strong>{{ "%.2f"|format(row.current_price) }}</strong>
+                {% if ticker.currency %}<span>{{ ticker.currency }}</span>{% endif %}
+                {% if common_params.enable_realtime_updates and row.current_price_updated_at %}
+                  <span>Updated {{ row.current_price_updated_at }}</span>
+                {% endif %}
+              {% else %}
+                <span class="muted">Unavailable</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if row.daily_change_pct is not none %}
+                {% set change_class = "change-flat" %}
+                {% set change_sign = "" %}
+                {% if row.daily_change_pct > 0 %}
+                  {% set change_class = "change-positive" %}
+                  {% set change_sign = "+" %}
+                {% elif row.daily_change_pct < 0 %}
+                  {% set change_class = "change-negative" %}
+                {% endif %}
+                <strong class="{{ change_class }}">{{ change_sign }}{{ "%.2f"|format(row.daily_change_pct) }}%</strong>
+              {% else %}
+                <span class="muted">N/A</span>
+              {% endif %}
+            </td>
+            <td>
+              {% if ticker.last_trade_date %}
+                <strong>{{ ticker.last_trade_date }}</strong>
+                <span>Downloaded {{ ticker.last_downloaded_at or "pending" }}</span>
+              {% else %}
+                <span class="muted">No history</span>
+              {% endif %}
+            </td>
+            <td>
+              <div class="signal-grid">
+                {% for strategy_name, signal in row.strategy_signals.items() %}
+                  <details class="signal-card">
+                    <summary>
+                      <span class="strategy-label">
+                        {{ signal.label }}
+                        {% if signal.operation_on_latest_candle %}
+                          <span
+                            class="latest-operation-marker"
+                            title="Operation on latest candle"
+                            aria-label="Operation on latest candle"
+                          ></span>
+                        {% endif %}
+                      </span>
+                      <a
+                        class="signal {{ signal.signal_class }}"
+                        href="{{ url_for('strategy_operations', ticker_id=ticker.id, strategy_name=strategy_name) }}"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >{{ signal.signal }}</a>
+                    </summary>
+                    <p>{{ signal.detail }}</p>
+                    {% if signal.metrics %}
+                      <dl>
+                        {% for name, value in signal.metrics.items() %}
+                          <div>
+                            <dt>{{ name|replace("_", " ") }}</dt>
+                            <dd>{{ value }}</dd>
+                          </div>
+                        {% endfor %}
+                      </dl>
+                    {% endif %}
+                  </details>
+                {% endfor %}
+              </div>
+            </td>
+            <td class="actions ticker-actions">
+              <form action="{{ url_for('refresh_ticker', ticker_id=ticker.id) }}" method="post">
+                <button class="secondary compact" type="submit">Refresh</button>
+              </form>
+              <form action="{{ url_for('delete_ticker', ticker_id=ticker.id) }}" method="post">
+                <button class="danger compact" type="submit">Remove</button>
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endmacro %}
+
+{% block content %}
+  <section class="toolbar">
+    <form class="ticker-form" action="{{ url_for('add_ticker') }}" method="post">
+      <label>
+        Symbol
+        <input name="symbol" type="text" placeholder="AAPL or BTC" autocomplete="off" required>
+      </label>
+      <label>
+        Market
+        <select name="asset_type">
+          <option value="stock">US stock</option>
+          <option value="crypto">Crypto</option>
+        </select>
+      </label>
+      <button type="submit">Add ticker</button>
+    </form>
+
+    <form action="{{ url_for('refresh_all_tickers') }}" method="post">
+      <button class="secondary" type="submit">Refresh all</button>
+    </form>
+  </section>
+
+  {% if rows %}
+    <div class="dashboard-tabs" data-dashboard-tabs>
+      <div class="group-tab-list" role="tablist" aria-label="Ticker groups">
+        {% for group in row_groups %}
+          <button
+            class="group-tab {% if loop.first %}active{% endif %}"
+            type="button"
+            role="tab"
+            id="group-tab-{{ group.slug }}"
+            aria-controls="group-panel-{{ group.slug }}"
+            aria-selected="{{ 'true' if loop.first else 'false' }}"
+            data-group-tab="{{ group.slug }}"
+          >
+            <span>{{ group.label }}</span>
+            <strong>{{ group.rows|length }}</strong>
+          </button>
+        {% endfor %}
+      </div>
+
+      {% for group in row_groups %}
+        <section
+          class="panel ticker-group"
+          id="group-panel-{{ group.slug }}"
+          role="tabpanel"
+          aria-labelledby="group-tab-{{ group.slug }}"
+          data-group-panel="{{ group.slug }}"
+          {% if not loop.first %}hidden{% endif %}
+        >
+          <div class="panel-heading">
+            <div>
+              <h1>{{ group.label }}</h1>
+              <p>{{ group.description }}</p>
+            </div>
+          </div>
+          {% if group.rows %}
+            {{ ticker_table(group.rows) }}
+          {% else %}
+            <div class="empty-state compact">
+              <h2>No tickers in this group</h2>
+            </div>
+          {% endif %}
+        </section>
+      {% endfor %}
+    </div>
+    <script>
+      (() => {
+        const dashboardTabs = document.querySelector("[data-dashboard-tabs]");
+        if (!dashboardTabs) return;
+
+        const tabs = Array.from(dashboardTabs.querySelectorAll("[data-group-tab]"));
+        const panels = Array.from(dashboardTabs.querySelectorAll("[data-group-panel]"));
+
+        function activateGroup(slug, updateHash = true) {
+          const selectedTab = tabs.find((tab) => tab.dataset.groupTab === slug) || tabs[0];
+          if (!selectedTab) return;
+          const selectedSlug = selectedTab.dataset.groupTab;
+
+          for (const tab of tabs) {
+            const isActive = tab.dataset.groupTab === selectedSlug;
+            tab.classList.toggle("active", isActive);
+            tab.setAttribute("aria-selected", isActive ? "true" : "false");
+          }
+
+          for (const panel of panels) {
+            panel.hidden = panel.dataset.groupPanel !== selectedSlug;
+          }
+
+          if (updateHash) {
+            history.replaceState(null, "", `#${selectedSlug}`);
+          }
+        }
+
+        for (const tab of tabs) {
+          tab.addEventListener("click", () => activateGroup(tab.dataset.groupTab));
+        }
+
+        if (location.hash.length > 1) {
+          activateGroup(location.hash.slice(1), false);
+        }
+      })();
+    </script>
+  {% else %}
+    <section class="panel">
+      <div class="empty-state">
+        <h2>No tickers yet</h2>
+        <p>Add a US stock or crypto symbol to download history and start calculating signals.</p>
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}
