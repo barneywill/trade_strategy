@@ -4,6 +4,8 @@ A local Flask app for tracking US stocks and crypto coins, storing market data
 in SQLite, and viewing configurable strategy signals, operation history, charts,
 and yearly backtests.
 
+![Trade Strategy](imgs/trade_strategy.png)
+
 ## Features
 
 - Track US stocks and crypto tickers.
