@@ -92,6 +92,10 @@ a {
   margin: 28px auto 56px;
 }
 
+.page:has(.dashboard-layout) {
+  width: min(1516px, calc(100% - 32px));
+}
+
 .flash-stack {
   display: grid;
   gap: 10px;
@@ -285,6 +289,31 @@ h2 {
 .dashboard-tabs {
   display: grid;
   gap: 14px;
+}
+
+.dashboard-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1280px) 220px;
+  gap: 16px;
+  align-items: start;
+}
+
+.dashboard-main {
+  min-width: 0;
+}
+
+.dashboard-actions {
+  display: grid;
+  gap: 12px;
+  width: 220px;
+}
+
+.dashboard-actions .ticker-form {
+  grid-template-columns: 1fr;
+}
+
+.dashboard-actions button {
+  width: 100%;
 }
 
 .group-tab-list {
@@ -766,8 +795,14 @@ td.actions.ticker-actions {
     flex-direction: column;
   }
 
+  .dashboard-layout {
+    grid-template-columns: 1fr;
+  }
+
   .nav,
   .toolbar > form,
+  .dashboard-actions,
+  .dashboard-actions > form,
   .ticker-form,
   .operation-summary,
   .parameter-grid,

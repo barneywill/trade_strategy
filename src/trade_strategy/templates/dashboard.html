@@ -123,71 +123,79 @@ https://finance.yahoo.com/chart/{{ ticker.symbol }}
   </div>
 {% endmacro %}
 
+{% macro dashboard_actions() %}
+  <form class="ticker-form" action="{{ url_for('add_ticker') }}" method="post">
+    <label>
+      Symbol
+      <input name="symbol" type="text" placeholder="AAPL or BTC" autocomplete="off" required>
+    </label>
+    <label>
+      Market
+      <select name="asset_type">
+        <option value="stock">US stock</option>
+        <option value="crypto">Crypto</option>
+      </select>
+    </label>
+    <button type="submit">Add ticker</button>
+  </form>
+
+  <form action="{{ url_for('refresh_all_tickers') }}" method="post">
+    <button class="secondary" type="submit">Refresh all</button>
+  </form>
+{% endmacro %}
+
 {% block content %}
-  <section class="toolbar">
-    <form class="ticker-form" action="{{ url_for('add_ticker') }}" method="post">
-      <label>
-        Symbol
-        <input name="symbol" type="text" placeholder="AAPL or BTC" autocomplete="off" required>
-      </label>
-      <label>
-        Market
-        <select name="asset_type">
-          <option value="stock">US stock</option>
-          <option value="crypto">Crypto</option>
-        </select>
-      </label>
-      <button type="submit">Add ticker</button>
-    </form>
-
-    <form action="{{ url_for('refresh_all_tickers') }}" method="post">
-      <button class="secondary" type="submit">Refresh all</button>
-    </form>
-  </section>
-
   {% if rows %}
-    <div class="dashboard-tabs" data-dashboard-tabs>
-      <div class="group-tab-list" role="tablist" aria-label="Ticker groups">
-        {% for group in row_groups %}
-          <button
-            class="group-tab {% if loop.first %}active{% endif %}"
-            type="button"
-            role="tab"
-            id="group-tab-{{ group.slug }}"
-            aria-controls="group-panel-{{ group.slug }}"
-            aria-selected="{{ 'true' if loop.first else 'false' }}"
-            data-group-tab="{{ group.slug }}"
-          >
-            <span>{{ group.label }}</span>
-            <strong>{{ group.rows|length }}</strong>
-          </button>
-        {% endfor %}
+    <div class="dashboard-layout">
+      <div class="dashboard-main">
+        <div class="dashboard-tabs" data-dashboard-tabs>
+          <div class="group-tab-list" role="tablist" aria-label="Ticker groups">
+            {% for group in row_groups %}
+              <button
+                class="group-tab {% if loop.first %}active{% endif %}"
+                type="button"
+                role="tab"
+                id="group-tab-{{ group.slug }}"
+                aria-controls="group-panel-{{ group.slug }}"
+                aria-selected="{{ 'true' if loop.first else 'false' }}"
+                data-group-tab="{{ group.slug }}"
+              >
+                <span>{{ group.label }}</span>
+                <strong>{{ group.rows|length }}</strong>
+              </button>
+            {% endfor %}
+          </div>
+
+          {% for group in row_groups %}
+            <section
+              class="panel ticker-group"
+              id="group-panel-{{ group.slug }}"
+              role="tabpanel"
+              aria-labelledby="group-tab-{{ group.slug }}"
+              data-group-panel="{{ group.slug }}"
+              {% if not loop.first %}hidden{% endif %}
+            >
+              <div class="panel-heading">
+                <div>
+                  <h1>{{ group.label }}</h1>
+                  <p>{{ group.description }}</p>
+                </div>
+              </div>
+              {% if group.rows %}
+                {{ ticker_table(group.rows) }}
+              {% else %}
+                <div class="empty-state compact">
+                  <h2>No tickers in this group</h2>
+                </div>
+              {% endif %}
+            </section>
+          {% endfor %}
+        </div>
       </div>
 
-      {% for group in row_groups %}
-        <section
-          class="panel ticker-group"
-          id="group-panel-{{ group.slug }}"
-          role="tabpanel"
-          aria-labelledby="group-tab-{{ group.slug }}"
-          data-group-panel="{{ group.slug }}"
-          {% if not loop.first %}hidden{% endif %}
-        >
-          <div class="panel-heading">
-            <div>
-              <h1>{{ group.label }}</h1>
-              <p>{{ group.description }}</p>
-            </div>
-          </div>
-          {% if group.rows %}
-            {{ ticker_table(group.rows) }}
-          {% else %}
-            <div class="empty-state compact">
-              <h2>No tickers in this group</h2>
-            </div>
-          {% endif %}
-        </section>
-      {% endfor %}
+      <aside class="dashboard-actions" aria-label="Dashboard actions">
+        {{ dashboard_actions() }}
+      </aside>
     </div>
     <script>
       (() => {
@@ -227,11 +235,17 @@ https://finance.yahoo.com/chart/{{ ticker.symbol }}
       })();
     </script>
   {% else %}
-    <section class="panel">
-      <div class="empty-state">
-        <h2>No tickers yet</h2>
-        <p>Add a US stock or crypto symbol to download history and start calculating signals.</p>
-      </div>
-    </section>
+    <div class="dashboard-layout">
+      <section class="panel dashboard-main">
+        <div class="empty-state">
+          <h2>No tickers yet</h2>
+          <p>Add a US stock or crypto symbol to download history and start calculating signals.</p>
+        </div>
+      </section>
+
+      <aside class="dashboard-actions" aria-label="Dashboard actions">
+        {{ dashboard_actions() }}
+      </aside>
+    </div>
   {% endif %}
 {% endblock %}
