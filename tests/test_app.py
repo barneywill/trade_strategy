@@ -95,6 +95,52 @@ def test_default_group_symbol_parser_normalizes_and_deduplicates():
     ]
 
 
+def test_access_password_gate_requires_login_when_configured(tmp_path):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": db_path,
+            "AUTO_REFRESH_ENABLED": False,
+            "ACCESS_PASSWORD": "secret",
+            "SECRET_KEY": "test-secret",
+        }
+    )
+    client = app.test_client()
+
+    response = client.get("/")
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/login?next=/")
+
+    response = client.get("/login")
+    assert response.status_code == 200
+    assert b"Access Required" in response.data
+
+    response = client.post("/login", data={"password": "wrong"})
+    assert response.status_code == 200
+    assert b"Incorrect password." in response.data
+
+    response = client.post(
+        "/login",
+        data={"password": "secret", "next": "/strategies"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/strategies")
+
+    response = client.get("/strategies")
+    assert response.status_code == 200
+    assert b"Log out" in response.data
+
+    response = client.post("/logout", follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["Location"].endswith("/login")
+
+    response = client.get("/")
+    assert response.status_code == 302
+    assert "/login" in response.headers["Location"]
+
+
 def test_strategy_settings_renders_and_saves_common_realtime_parameters(tmp_path):
     db_path = tmp_path / "trade_strategy.sqlite3"
     app = create_app(

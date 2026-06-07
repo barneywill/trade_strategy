@@ -1,11 +1,11 @@
 from __future__ import annotations
 
+import hmac
+import os
 from pathlib import Path
 from typing import Any
 
-import os
-
-from flask import Flask, flash, redirect, render_template, request, url_for
+from flask import Flask, flash, redirect, render_template, request, session, url_for
 
 from . import database
 from .backtest import yearly_backtest
@@ -32,6 +32,8 @@ from .strategies import (
     STRATEGIES,
     TradeStrategy,
     default_strategy_params,
+    _ema_metrics,
+    _ema_values,
     _macd_metrics,
     _macd_values,
 )
@@ -40,12 +42,16 @@ from .strategies import (
 def create_app(test_config: dict[str, Any] | None = None) -> Flask:
     app = Flask(__name__)
     app.config.from_mapping(
-        SECRET_KEY="dev",
+        SECRET_KEY=os.environ.get(
+            "TRADE_STRATEGY_SECRET_KEY",
+            os.environ.get("TRADE_STRATEGY_ACCESS_PASSWORD") or "dev",
+        ),
         DATABASE=database.database_path(),
         HISTORY_PERIOD="2y",
         HISTORY_START_DATE="2000-01-01",
         DAILY_HISTORY_PERIOD="1mo",
         AUTO_REFRESH_ENABLED=os.environ.get("TRADE_STRATEGY_AUTO_REFRESH", "1") != "0",
+        ACCESS_PASSWORD=os.environ.get("TRADE_STRATEGY_ACCESS_PASSWORD", ""),
     )
     if test_config:
         app.config.update(test_config)
@@ -70,6 +76,48 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             db_path,
             int(saved_common_params.get("realtime_update_frequency", 300)),
         )
+
+    @app.context_processor
+    def auth_template_context():
+        return {
+            "access_password_enabled": access_password_enabled(app),
+            "access_granted": bool(session.get("access_granted")),
+        }
+
+    @app.before_request
+    def require_access_password():
+        if not access_password_enabled(app):
+            return None
+        if session.get("access_granted"):
+            return None
+        if request.endpoint in {"login", "static"}:
+            return None
+        return redirect(url_for("login", next=request.full_path.rstrip("?")))
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if not access_password_enabled(app):
+            return redirect(url_for("dashboard"))
+
+        if request.method == "POST":
+            password = request.form.get("password", "")
+            if hmac.compare_digest(password, str(app.config["ACCESS_PASSWORD"])):
+                session["access_granted"] = True
+                next_url = request.form.get("next") or url_for("dashboard")
+                if not is_local_next_url(next_url):
+                    next_url = url_for("dashboard")
+                return redirect(next_url)
+            flash("Incorrect password.", "error")
+
+        return render_template(
+            "login.html",
+            next_url=request.args.get("next", url_for("dashboard")),
+        )
+
+    @app.post("/logout")
+    def logout():
+        session.pop("access_granted", None)
+        return redirect(url_for("login"))
 
     @app.get("/")
     def dashboard():
@@ -290,6 +338,8 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 "fast": int(config["params"].get("fast_window", 12)),
                 "slow": int(config["params"].get("slow_window", 26)),
             }
+            if config["params"].get("use_trend_filter", False):
+                ema_windows["trend"] = int(config["params"].get("trend_ema_window", 200))
         if strategy_name == "macd_trend_following" and config["params"].get(
             "use_trend_filter",
             True,
@@ -425,19 +475,14 @@ def evaluate_strategies(
 
 
 def latest_ema_metrics(history, params: dict[str, Any]) -> dict[str, float]:
-    fast_window = int(params.get("fast_window", 12))
-    slow_window = int(params.get("slow_window", 26))
-    frame = history.dropna(subset=["close"])
-    if fast_window >= slow_window or len(frame) < slow_window + 2:
+    frame = history.dropna(subset=["close"]).copy()
+    values = _ema_values(frame, params)
+    if values is None:
         return {}
-
-    close = frame["close"].astype(float)
-    fast = close.ewm(span=fast_window, adjust=False).mean()
-    slow = close.ewm(span=slow_window, adjust=False).mean()
-    return {
-        "fast_ema": round(float(fast.iloc[-1]), 4),
-        "slow_ema": round(float(slow.iloc[-1]), 4),
-    }
+    return _ema_metrics(
+        values.iloc[-1],
+        bool(params.get("use_trend_filter", False)),
+    )
 
 
 def latest_macd_metrics(history, params: dict[str, Any]) -> dict[str, float | str]:
@@ -681,6 +726,14 @@ def read_parameter_specs(prefix: str, parameter_specs, form) -> dict[str, Any]:
             params[spec.name] = str(raw_value)
 
     return params
+
+
+def access_password_enabled(app: Flask) -> bool:
+    return bool(str(app.config.get("ACCESS_PASSWORD", "")).strip())
+
+
+def is_local_next_url(value: str) -> bool:
+    return value.startswith("/") and not value.startswith("//")
 
 
 if __name__ == "__main__":

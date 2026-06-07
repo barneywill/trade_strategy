@@ -17,6 +17,9 @@ COPY src ./src
 COPY data ./data
 COPY README.md ./README.md
 
+ARG ACCESS_PASSWORD=""
+ENV TRADE_STRATEGY_ACCESS_PASSWORD=${ACCESS_PASSWORD}
+
 EXPOSE 5001
 
 CMD ["gunicorn", "--bind", "0.0.0.0:5001", "--workers", "1", "--threads", "4", "--timeout", "120", "trade_strategy.app:create_app()"]

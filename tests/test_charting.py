@@ -100,3 +100,19 @@ def test_operation_chart_includes_ema_lines_when_requested():
     ]
     assert all(line["points"] for line in chart["ema_lines"])
     assert all(len(line["points"].split()) == 5 for line in chart["ema_lines"])
+
+
+def test_operation_chart_includes_trend_ema_line_class_when_requested():
+    history = pd.DataFrame(
+        {"close": [10, 11, 12, 13, 14]},
+        index=pd.date_range("2024-01-01", periods=5),
+    )
+
+    chart = build_operation_chart(
+        history,
+        [],
+        ema_windows={"trend": 3},
+    )
+
+    assert chart["ema_lines"][0]["label"] == "Trend EMA 3"
+    assert chart["ema_lines"][0]["class"] == "trend-ema-line"

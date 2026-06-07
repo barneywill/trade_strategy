@@ -22,8 +22,10 @@ from .strategies import (
     StrategyOperation,
     TradeStrategy,
     _current_direction_from_operations,
+    _ema_values,
     _macd_values,
     _next_add_price,
+    _passes_ema_trend_filter,
     _passes_macd_trend_filter,
     _turtle_exit_levels,
     _turtle_levels,
@@ -234,23 +236,50 @@ class _RealtimeTriggerState:
 
 @dataclass(frozen=True)
 class _EmaRealtimeTriggerState(_RealtimeTriggerState):
+    direction: str | None
     previous_fast: float
     previous_slow: float
     prior_fast_before_latest: float
     prior_slow_before_latest: float
+    prior_trend_ema: float
     fast_alpha: float
     slow_alpha: float
+    trend_alpha: float
+    use_trend_filter: bool
 
     def triggered(self, current_price: float) -> bool:
         fast = self.fast_alpha * current_price + (1.0 - self.fast_alpha) * self.prior_fast_before_latest
         slow = self.slow_alpha * current_price + (1.0 - self.slow_alpha) * self.prior_slow_before_latest
-        return (
-            self.previous_fast <= self.previous_slow
-            and fast > slow
-        ) or (
-            self.previous_fast >= self.previous_slow
-            and fast < slow
+        trend_ema = self.trend_alpha * current_price + (1.0 - self.trend_alpha) * self.prior_trend_ema
+        values = pd.Series(
+            {
+                "fast_ema": fast,
+                "slow_ema": slow,
+                "trend_ema": trend_ema,
+            }
         )
+        crossed_long = self.previous_fast <= self.previous_slow and fast > slow
+        crossed_short = self.previous_fast >= self.previous_slow and fast < slow
+        long_direction = fast > slow
+        short_direction = fast < slow
+        long_allowed = _passes_ema_trend_filter(
+            current_price,
+            values,
+            LONG,
+            self.use_trend_filter,
+        )
+        short_allowed = _passes_ema_trend_filter(
+            current_price,
+            values,
+            SHORT,
+            self.use_trend_filter,
+        )
+
+        if self.direction == LONG:
+            return crossed_short or not long_allowed
+        if self.direction == SHORT:
+            return crossed_long or not short_allowed
+        return (long_direction and long_allowed) or (short_direction and short_allowed)
 
 
 @dataclass(frozen=True)
@@ -394,32 +423,40 @@ def _build_realtime_trigger_state(
     if isinstance(strategy, MACDTrendFollowingStrategy) or strategy_name == "macd_trend_following":
         return _build_macd_realtime_trigger_state(history, params, operations, cache_key)
     if isinstance(strategy, EMACrossoverStrategy) or strategy_name == "ema_crossover":
-        return _build_ema_realtime_trigger_state(history, params, cache_key)
+        return _build_ema_realtime_trigger_state(history, params, operations, cache_key)
     return None
 
 
 def _build_ema_realtime_trigger_state(
     history: pd.DataFrame,
     params: dict[str, Any],
+    operations: list[StrategyOperation],
     cache_key: str,
 ) -> _EmaRealtimeTriggerState | None:
     frame = history.dropna(subset=["close"]).copy()
     fast_window = int(params.get("fast_window", 12))
     slow_window = int(params.get("slow_window", 26))
-    if fast_window >= slow_window or len(frame) < slow_window + 2:
+    trend_ema_window = int(params.get("trend_ema_window", 200))
+    values = _ema_values(frame, params)
+    if values is None or len(values) < 2:
         return None
 
     close = frame["close"].astype(float)
     fast = close.ewm(span=fast_window, adjust=False).mean()
     slow = close.ewm(span=slow_window, adjust=False).mean()
+    trend = close.ewm(span=trend_ema_window, adjust=False).mean()
     return _EmaRealtimeTriggerState(
         cache_key=cache_key,
+        direction=_current_direction_from_operations(operations),
         previous_fast=float(fast.iloc[-2]),
         previous_slow=float(slow.iloc[-2]),
         prior_fast_before_latest=float(fast.iloc[-2]),
         prior_slow_before_latest=float(slow.iloc[-2]),
+        prior_trend_ema=float(trend.iloc[-2]),
         fast_alpha=2.0 / (fast_window + 1.0),
         slow_alpha=2.0 / (slow_window + 1.0),
+        trend_alpha=2.0 / (trend_ema_window + 1.0),
+        use_trend_filter=bool(params.get("use_trend_filter", False)),
     )
 
 

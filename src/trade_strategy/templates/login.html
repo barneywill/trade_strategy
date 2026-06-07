@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}Login - Trade Strategy{% endblock %}
+
+{% block content %}
+  <section class="auth-panel">
+    <form class="strategy-card auth-card" action="{{ url_for('login') }}" method="post">
+      <div class="strategy-card-heading">
+        <div>
+          <h1>Access Required</h1>
+          <p>Enter the access password to open the dashboard.</p>
+        </div>
+      </div>
+      <input type="hidden" name="next" value="{{ next_url }}">
+      <label>
+        Password
+        <input name="password" type="password" autocomplete="current-password" required autofocus>
+      </label>
+      <button type="submit">Continue</button>
+    </form>
+  </section>
+{% endblock %}

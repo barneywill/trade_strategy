@@ -105,41 +105,43 @@ class TradeStrategy(ABC):
 class EMACrossoverStrategy(TradeStrategy):
     name = "ema_crossover"
     label = "EMA Crossover"
-    description = "Compares a fast and slow exponential moving average."
+    description = "Compares a fast and slow exponential moving average with an optional trend EMA filter."
     parameters = (
         ParameterSpec("fast_window", "Fast EMA window", 12, minimum=2, maximum=200),
         ParameterSpec("slow_window", "Slow EMA window", 26, minimum=3, maximum=400),
+        ParameterSpec("use_trend_filter", "Trend EMA filter", False, kind="checkbox"),
+        ParameterSpec("trend_ema_window", "Trend EMA window", 200, minimum=20, maximum=500),
     )
 
     def evaluate(self, history: pd.DataFrame, params: dict[str, Any]) -> StrategyResult:
-        fast_window = int(params.get("fast_window", 12))
-        slow_window = int(params.get("slow_window", 26))
-
-        if fast_window >= slow_window:
-            return StrategyResult(
-                "WAIT",
-                "Fast window must be lower than slow window.",
-                {},
-                "hold",
-            )
-
-        if not self.enough_data(history, slow_window + 2):
+        frame = history.dropna(subset=["close"]).copy()
+        values = _ema_values(frame, params)
+        if values is None:
             return StrategyResult("WAIT", "Not enough history.", {}, "hold")
 
-        close = history["close"].dropna()
-        fast = close.ewm(span=fast_window, adjust=False).mean()
-        slow = close.ewm(span=slow_window, adjust=False).mean()
-        latest_fast = float(fast.iloc[-1])
-        latest_slow = float(slow.iloc[-1])
-        previous_fast = float(fast.iloc[-2])
-        previous_slow = float(slow.iloc[-2])
+        latest = values.iloc[-1]
+        previous = values.iloc[-2]
+        close = float(frame["close"].iloc[-1])
+        use_trend_filter = bool(params.get("use_trend_filter", False))
+        metrics = _ema_metrics(latest, use_trend_filter)
+        latest_fast = float(latest["fast_ema"])
+        latest_slow = float(latest["slow_ema"])
+        previous_fast = float(previous["fast_ema"])
+        previous_slow = float(previous["slow_ema"])
+        long_allowed = _passes_ema_trend_filter(
+            close,
+            latest,
+            LONG,
+            use_trend_filter,
+        )
+        short_allowed = _passes_ema_trend_filter(
+            close,
+            latest,
+            SHORT,
+            use_trend_filter,
+        )
 
-        metrics = {
-            "fast_ema": round(latest_fast, 4),
-            "slow_ema": round(latest_slow, 4),
-        }
-
-        if previous_fast <= previous_slow and latest_fast > latest_slow:
+        if previous_fast <= previous_slow and latest_fast > latest_slow and long_allowed:
             return StrategyResult(
                 "LONG ENTRY",
                 "Fast EMA crossed above slow EMA.",
@@ -148,7 +150,7 @@ class EMACrossoverStrategy(TradeStrategy):
                 LONG,
                 ENTRY,
             )
-        if previous_fast >= previous_slow and latest_fast < latest_slow:
+        if previous_fast >= previous_slow and latest_fast < latest_slow and short_allowed:
             return StrategyResult(
                 "SHORT ENTRY",
                 "Fast EMA crossed below slow EMA.",
@@ -158,6 +160,13 @@ class EMACrossoverStrategy(TradeStrategy):
                 ENTRY,
             )
         if latest_fast > latest_slow:
+            if not long_allowed:
+                return StrategyResult(
+                    "WAIT",
+                    "EMA trend filter blocks the long direction.",
+                    metrics,
+                    "hold",
+                )
             return StrategyResult(
                 "LONG HOLD",
                 "Holding long EMA direction.",
@@ -166,6 +175,13 @@ class EMACrossoverStrategy(TradeStrategy):
                 LONG,
             )
         if latest_fast < latest_slow:
+            if not short_allowed:
+                return StrategyResult(
+                    "WAIT",
+                    "EMA trend filter blocks the short direction.",
+                    metrics,
+                    "hold",
+                )
             return StrategyResult(
                 "SHORT HOLD",
                 "Holding short EMA direction.",
@@ -185,46 +201,187 @@ class EMACrossoverStrategy(TradeStrategy):
         self, history: pd.DataFrame, params: dict[str, Any]
     ) -> list[StrategyOperation]:
         frame = history.dropna(subset=["close"]).copy()
+        values = _ema_values(frame, params)
+        if values is None:
+            return []
+
+        use_trend_filter = bool(params.get("use_trend_filter", False))
         operations: list[StrategyOperation] = []
         current_direction: TradeDirection | None = None
 
-        for index in range(1, len(frame) + 1):
-            window = frame.iloc[:index]
-            result = self.evaluate(window, params)
-            if result.direction not in {LONG, SHORT}:
-                continue
+        slow_window = int(params.get("slow_window", 26))
+        for index in range(slow_window + 1, len(values)):
+            trade_date = values.index[index]
+            previous = values.iloc[index - 1]
+            latest = values.iloc[index]
+            close = float(frame.loc[trade_date, "close"])
+            metrics = _ema_metrics(latest, use_trend_filter)
+            crossed_long = (
+                float(previous["fast_ema"]) <= float(previous["slow_ema"])
+                and float(latest["fast_ema"]) > float(latest["slow_ema"])
+            )
+            crossed_short = (
+                float(previous["fast_ema"]) >= float(previous["slow_ema"])
+                and float(latest["fast_ema"]) < float(latest["slow_ema"])
+            )
+            long_direction = float(latest["fast_ema"]) > float(latest["slow_ema"])
+            short_direction = float(latest["fast_ema"]) < float(latest["slow_ema"])
+            long_allowed = _passes_ema_trend_filter(
+                close,
+                latest,
+                LONG,
+                use_trend_filter,
+            )
+            short_allowed = _passes_ema_trend_filter(
+                close,
+                latest,
+                SHORT,
+                use_trend_filter,
+            )
 
-            if current_direction is None:
-                operations.append(
-                    _operation_from_result(
-                        window,
-                        _with_operation(
-                            result,
+            if current_direction == LONG:
+                if crossed_short or not long_allowed:
+                    operations.append(
+                        _make_operation(
+                            trade_date,
+                            LONG,
+                            EXIT,
+                            close,
+                            close,
+                            "EMA direction no longer supports the long position.",
+                            metrics,
+                        )
+                    )
+                    current_direction = None
+                if crossed_short and short_allowed:
+                    operations.append(
+                        _make_operation(
+                            trade_date,
+                            SHORT,
                             ENTRY,
-                            f"Initial {result.direction} EMA direction.",
-                        ),
+                            close,
+                            close,
+                            "Fast EMA crossed below slow EMA.",
+                            metrics,
+                        )
                     )
-                )
-                current_direction = result.direction
+                    current_direction = SHORT
                 continue
 
-            if result.direction != current_direction:
+            if current_direction == SHORT:
+                if crossed_long or not short_allowed:
+                    operations.append(
+                        _make_operation(
+                            trade_date,
+                            SHORT,
+                            EXIT,
+                            close,
+                            close,
+                            "EMA direction no longer supports the short position.",
+                            metrics,
+                        )
+                    )
+                    current_direction = None
+                if crossed_long and long_allowed:
+                    operations.append(
+                        _make_operation(
+                            trade_date,
+                            LONG,
+                            ENTRY,
+                            close,
+                            close,
+                            "Fast EMA crossed above slow EMA.",
+                            metrics,
+                        )
+                    )
+                    current_direction = LONG
+                continue
+
+            if long_direction and long_allowed:
                 operations.append(
-                    StrategyOperation(
-                        trade_date=window.index[-1].date().isoformat(),
-                        direction=current_direction,
-                        operation=EXIT,
-                        price=round(float(window["close"].iloc[-1]), 4),
-                        signal_price=round(float(window["close"].iloc[-1]), 4),
-                        detail=f"EMA direction reversed; exiting {current_direction}.",
-                        metrics=result.metrics,
-                        signal_class=current_direction,
+                    _make_operation(
+                        trade_date,
+                        LONG,
+                        ENTRY,
+                        close,
+                        close,
+                        (
+                            "Fast EMA crossed above slow EMA."
+                            if crossed_long
+                            else "Initial long EMA direction."
+                        ),
+                        metrics,
                     )
                 )
-                operations.append(_operation_from_result(window, result))
-                current_direction = result.direction
+                current_direction = LONG
+            elif short_direction and short_allowed:
+                operations.append(
+                    _make_operation(
+                        trade_date,
+                        SHORT,
+                        ENTRY,
+                        close,
+                        close,
+                        (
+                            "Fast EMA crossed below slow EMA."
+                            if crossed_short
+                            else "Initial short EMA direction."
+                        ),
+                        metrics,
+                    )
+                )
+                current_direction = SHORT
 
         return _apply_position_sizing(operations, self.position_unit_count(params))
+
+
+def _ema_values(
+    frame: pd.DataFrame,
+    params: dict[str, Any],
+) -> pd.DataFrame | None:
+    fast_window = int(params.get("fast_window", 12))
+    slow_window = int(params.get("slow_window", 26))
+    trend_ema_window = int(params.get("trend_ema_window", 200))
+
+    if fast_window >= slow_window:
+        return None
+    if len(frame) < slow_window + 2:
+        return None
+
+    close = frame["close"].dropna().astype(float)
+    return pd.DataFrame(
+        {
+            "fast_ema": close.ewm(span=fast_window, adjust=False).mean(),
+            "slow_ema": close.ewm(span=slow_window, adjust=False).mean(),
+            "trend_ema": close.ewm(span=trend_ema_window, adjust=False).mean(),
+        }
+    )
+
+
+def _ema_metrics(row, use_trend_filter: bool) -> dict[str, float]:
+    metrics = {
+        "fast_ema": round(float(row["fast_ema"]), 4),
+        "slow_ema": round(float(row["slow_ema"]), 4),
+    }
+    if use_trend_filter:
+        metrics["trend_ema"] = round(float(row["trend_ema"]), 4)
+    return metrics
+
+
+def _passes_ema_trend_filter(
+    close: float,
+    row,
+    direction: TradeDirection,
+    use_trend_filter: bool,
+) -> bool:
+    if not use_trend_filter:
+        return True
+    trend_ema = row.get("trend_ema")
+    if trend_ema is None or pd.isna(trend_ema):
+        return False
+    if direction == LONG:
+        return close > float(trend_ema)
+    return close < float(trend_ema)
 
 
 class MACDTrendFollowingStrategy(TradeStrategy):

@@ -15,6 +15,11 @@
       <nav class="nav">
         <a href="{{ url_for('dashboard') }}">Dashboard</a>
         <a href="{{ url_for('strategy_settings') }}">Strategies</a>
+        {% if access_password_enabled and access_granted %}
+          <form class="nav-form" action="{{ url_for('logout') }}" method="post">
+            <button type="submit">Log out</button>
+          </form>
+        {% endif %}
       </nav>
     </header>
 

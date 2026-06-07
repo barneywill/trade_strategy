@@ -68,6 +68,39 @@ def test_ema_strategy_operation_history_lists_directional_entries_and_exits():
     assert operations[1].balance_after == 8181.82
 
 
+def test_ema_trend_filter_blocks_counter_trend_long_entry():
+    history = pd.DataFrame(
+        {"close": [100, 100, 100, 10, 20, 30, 40, 50]},
+        index=pd.date_range("2024-01-01", periods=8),
+    )
+
+    operations = EMACrossoverStrategy().operation_history(
+        history,
+        {
+            "fast_window": 2,
+            "slow_window": 4,
+            "use_trend_filter": True,
+            "trend_ema_window": 8,
+        },
+    )
+    result = EMACrossoverStrategy().evaluate(
+        history,
+        {
+            "fast_window": 2,
+            "slow_window": 4,
+            "use_trend_filter": True,
+            "trend_ema_window": 8,
+        },
+    )
+
+    assert ("long", "entry") not in {
+        (operation.direction, operation.operation) for operation in operations
+    }
+    assert result.signal == "WAIT"
+    assert result.signal_class == "hold"
+    assert "trend_ema" in result.metrics
+
+
 def test_macd_strategy_returns_long_hold_when_macd_stays_above_signal():
     history = pd.DataFrame(
         {"close": [10, 10, 10, 11, 12, 13, 14, 15]},

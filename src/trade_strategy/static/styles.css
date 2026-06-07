@@ -56,20 +56,34 @@ a {
 }
 
 .nav {
+  align-items: center;
   display: flex;
   gap: 10px;
 }
 
-.nav a {
+.nav a,
+.nav-form button {
   border: 1px solid var(--line);
   border-radius: 6px;
+  background: #fff;
+  color: var(--ink);
   padding: 8px 12px;
   text-decoration: none;
   font-weight: 700;
 }
 
-.nav a:hover {
+.nav-form {
+  margin: 0;
+}
+
+.nav-form button {
+  min-height: auto;
+}
+
+.nav a:hover,
+.nav-form button:hover {
   border-color: var(--accent);
+  background: #fff;
   color: var(--accent);
 }
 
@@ -221,6 +235,19 @@ button.compact {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: var(--surface);
+}
+
+.auth-panel {
+  display: grid;
+  justify-items: center;
+  padding-top: clamp(24px, 8vw, 96px);
+}
+
+.auth-card {
+  display: grid;
+  gap: 18px;
+  width: min(420px, 100%);
+  padding: 22px;
 }
 
 .panel {
@@ -597,6 +624,11 @@ td.actions.ticker-actions {
   stroke-width: 2;
 }
 
+.trend-ema-line {
+  stroke: #c2410c;
+  stroke-width: 2;
+}
+
 .chart-dot {
   stroke: #fff;
   stroke-width: 2;
@@ -658,6 +690,11 @@ td.actions.ticker-actions {
 .legend-line.slow-ema-line {
   height: 2px;
   background: #7c3aed;
+}
+
+.legend-line.trend-ema-line {
+  height: 2px;
+  background: #c2410c;
 }
 
 .legend-dot {

@@ -24,6 +24,7 @@ and yearly backtests.
 - Respect US stock market trading days and regular US market hours for stock
   realtime updates.
 - Send Telegram notifications when realtime data triggers a new operation.
+- Optionally require an access password before opening the web pages.
 - Display dashboard groups: Default, Latest Operations, US-Stock, and Crypto.
 - Open ticker links in Yahoo Finance charts.
 - Open signal/operation pages in a new tab.
@@ -34,17 +35,21 @@ and yearly backtests.
 
 ### EMA Crossover
 
-Compares a fast EMA and slow EMA.
+Compares a fast EMA and slow EMA with an optional trend EMA filter.
 
 Default parameters:
 
 - Fast EMA window: `12`
 - Slow EMA window: `26`
+- Trend EMA filter: disabled by default
+- Trend EMA window: `200`
 
 Signals:
 
 - Fast EMA above slow EMA: long direction
 - Fast EMA below slow EMA: short direction
+- When enabled, the trend EMA filter only allows long direction above the trend
+  EMA and short direction below the trend EMA.
 - Direction changes create exit and entry operations
 
 ### MACD Trend Tracking
@@ -166,6 +171,12 @@ Disable automatic startup/daily/realtime background refreshers:
 TRADE_STRATEGY_AUTO_REFRESH=0 flask --app trade_strategy.app run
 ```
 
+Require a password before showing the web pages:
+
+```bash
+TRADE_STRATEGY_ACCESS_PASSWORD='your-password' flask --app trade_strategy.app run
+```
+
 ## Docker
 
 Build:
@@ -173,6 +184,17 @@ Build:
 ```bash
 docker build -t trade-strategy:latest .
 ```
+
+Build with a baked-in access password:
+
+```bash
+docker build \
+  --build-arg ACCESS_PASSWORD='your-password' \
+  -t trade-strategy:latest .
+```
+
+Docker build args and image environment variables can be inspected from image
+metadata. For a real deployment, prefer setting the password at run time:
 
 Run with persistent SQLite data:
 
@@ -183,6 +205,19 @@ docker run -d \
   -v "$PWD/data:/app/data" \
   trade-strategy:latest
 ```
+
+Run with an access password:
+
+```bash
+docker run -d \
+  --name trade-strategy-app \
+  -p 5001:5001 \
+  -v "$PWD/data:/app/data" \
+  -e TRADE_STRATEGY_ACCESS_PASSWORD='your-password' \
+  trade-strategy:latest
+```
+
+When an access password is configured, the app redirects to `/login` first.
 
 Open:
 
