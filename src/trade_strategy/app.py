@@ -27,7 +27,14 @@ from .refresher import (
     start_history_refresher,
     start_realtime_price_refresher,
 )
-from .strategies import EXIT, STRATEGIES, TradeStrategy, default_strategy_params
+from .strategies import (
+    EXIT,
+    STRATEGIES,
+    TradeStrategy,
+    default_strategy_params,
+    _macd_metrics,
+    _macd_values,
+)
 
 
 def create_app(test_config: dict[str, Any] | None = None) -> Flask:
@@ -384,6 +391,22 @@ def evaluate_strategies(
                 operations,
                 latest_date,
             )
+        elif strategy_name == "ema_crossover":
+            results[strategy_name] = directional_signal_from_operations(
+                strategy.label,
+                "EMA",
+                operations,
+                latest_date,
+                latest_ema_metrics(history, config["params"]),
+            )
+        elif strategy_name == "macd_trend_following":
+            results[strategy_name] = directional_signal_from_operations(
+                strategy.label,
+                "MACD trend",
+                operations,
+                latest_date,
+                latest_macd_metrics(history, config["params"]),
+            )
         else:
             result = strategy.evaluate(history, config["params"])
             results[strategy_name] = {
@@ -399,6 +422,33 @@ def evaluate_strategies(
                 "metrics": result.metrics,
             }
     return results
+
+
+def latest_ema_metrics(history, params: dict[str, Any]) -> dict[str, float]:
+    fast_window = int(params.get("fast_window", 12))
+    slow_window = int(params.get("slow_window", 26))
+    frame = history.dropna(subset=["close"])
+    if fast_window >= slow_window or len(frame) < slow_window + 2:
+        return {}
+
+    close = frame["close"].astype(float)
+    fast = close.ewm(span=fast_window, adjust=False).mean()
+    slow = close.ewm(span=slow_window, adjust=False).mean()
+    return {
+        "fast_ema": round(float(fast.iloc[-1]), 4),
+        "slow_ema": round(float(slow.iloc[-1]), 4),
+    }
+
+
+def latest_macd_metrics(history, params: dict[str, Any]) -> dict[str, float | str]:
+    frame = history.dropna(subset=["close"]).copy()
+    macd = _macd_values(frame, params)
+    if macd is None:
+        return {}
+    return _macd_metrics(
+        macd.iloc[-1],
+        bool(params.get("use_trend_filter", True)),
+    )
 
 
 def calculate_daily_change_pct(history, asset_type: str) -> float | None:
@@ -472,6 +522,64 @@ def turtle_signal_from_operations(
         "detail": "Price has not opened a Turtle position.",
         "metrics": {},
     }
+
+
+def directional_signal_from_operations(
+    label: str,
+    strategy_label: str,
+    operations,
+    latest_date: str | None,
+    latest_metrics: dict[str, float | str],
+) -> dict[str, Any]:
+    operation_on_latest_candle = any(
+        operation.trade_date == latest_date for operation in operations
+    )
+    if operations and operations[-1].trade_date == latest_date:
+        latest = operations[-1]
+        return {
+            "label": label,
+            "signal": latest.label,
+            "signal_class": latest.signal_class,
+            "direction": latest.direction,
+            "operation": latest.operation,
+            "operation_on_latest_candle": operation_on_latest_candle,
+            "detail": latest.detail,
+            "metrics": latest.metrics or latest_metrics,
+        }
+
+    direction = current_direction_from_operations(operations)
+    if direction is not None:
+        return {
+            "label": label,
+            "signal": f"{direction.upper()} HOLD",
+            "signal_class": direction,
+            "direction": direction,
+            "operation": None,
+            "operation_on_latest_candle": operation_on_latest_candle,
+            "detail": f"Holding {direction} {strategy_label} direction.",
+            "metrics": latest_metrics,
+        }
+
+    return {
+        "label": label,
+        "signal": "WAIT",
+        "signal_class": "hold",
+        "direction": None,
+        "operation": None,
+        "operation_on_latest_candle": operation_on_latest_candle,
+        "detail": f"No active {strategy_label} position.",
+        "metrics": latest_metrics,
+    }
+
+
+def current_direction_from_operations(operations) -> str | None:
+    direction = None
+    for operation in operations:
+        if operation.operation == "entry":
+            direction = operation.direction
+        elif operation.operation == "exit" and direction == operation.direction:
+            direction = None
+    return direction
 
 
 def group_dashboard_rows(

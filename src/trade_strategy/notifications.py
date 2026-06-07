@@ -68,6 +68,32 @@ def send_operation_notification(
         return False
 
 
+def send_alarm_notification(config: TelegramConfig, message: str) -> bool:
+    if not config.configured:
+        return False
+
+    url = f"{TELEGRAM_API_BASE}/bot{parse.quote(config.bot_token)}/sendMessage"
+    payload = json.dumps(
+        {
+            "chat_id": config.chat_id,
+            "text": message,
+            "disable_web_page_preview": True,
+        }
+    ).encode("utf-8")
+    req = request.Request(
+        url,
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with request.urlopen(req, timeout=10) as response:
+            return 200 <= response.status < 300
+    except Exception:
+        LOGGER.exception("Telegram alarm notification failed.")
+        return False
+
+
 def format_operation_message(ticker, strategy_label: str, operation: StrategyOperation) -> str:
     return "\n".join(
         [

@@ -47,7 +47,9 @@ def test_realtime_refresh_updates_crypto_latest_daily_candle(tmp_path, monkeypat
 
     assert result == {"BTC-USD": 104.5}
     assert history.index[-1].date().isoformat() == "2026-06-07"
-    assert history["close"].iloc[-1] == 104
+    assert history["high"].iloc[-1] == 105
+    assert history["low"].iloc[-1] == 99
+    assert history["close"].iloc[-1] == 104.5
     assert prices[ticker_id]["price"] == 104.5
 
 
@@ -140,6 +142,34 @@ def test_realtime_refresh_skips_history_download_without_operation_trigger(
     assert history["low"].iloc[-1] == 104.5
     assert history["close"].iloc[-1] == 104.5
     assert calls == []
+
+
+def test_save_history_reports_only_changed_rows(tmp_path):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    database.init_db(db_path)
+    ticker_id = database.add_ticker("BTC-USD", "BTC", "crypto", path=db_path)
+    history = pd.DataFrame(
+        {
+            "Open": [100],
+            "High": [105],
+            "Low": [99],
+            "Close": [104],
+            "Adj Close": [104],
+            "Volume": [1000],
+        },
+        index=pd.to_datetime(["2026-06-07"]),
+    )
+
+    assert database.save_history(ticker_id, history, db_path) == 1
+    assert database.save_history(ticker_id, history, db_path) == 0
+    assert (
+        database.save_history(
+            ticker_id,
+            history.assign(Close=[104.5], **{"Adj Close": [104.5]}),
+            db_path,
+        )
+        == 1
+    )
 
 
 def test_realtime_refresh_skips_stock_candles_when_market_is_closed(

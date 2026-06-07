@@ -1,8 +1,15 @@
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
+from typing import Callable, TypeVar
 
 import pandas as pd
+
+
+FETCH_RETRY_ATTEMPTS = 5
+FETCH_RETRY_DELAY_SECONDS = 5.0
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -46,14 +53,23 @@ def download_history(
         download_args["period"] = period
 
     try:
-        history = yf.download(symbol, **download_args)
+        history = _retry_fetch(
+            lambda: yf.download(symbol, **download_args),
+            alarm_context=f"Download history for {symbol}",
+        )
     except ModuleNotFoundError:
         # yfinance repair mode can require scipy; fallback keeps downloads working.
         download_args["repair"] = False
-        history = yf.download(symbol, **download_args)
+        history = _retry_fetch(
+            lambda: yf.download(symbol, **download_args),
+            alarm_context=f"Download history for {symbol}",
+        )
     if history.empty and download_args.get("repair"):
         download_args["repair"] = False
-        history = yf.download(symbol, **download_args)
+        history = _retry_fetch(
+            lambda: yf.download(symbol, **download_args),
+            alarm_context=f"Download history for {symbol}",
+        )
     if history.empty:
         return history
 
@@ -70,7 +86,10 @@ def fetch_metadata(symbol: str) -> TickerMetadata:
     ticker = yf.Ticker(symbol)
     info = {}
     try:
-        info = ticker.get_info()
+        info = _retry_fetch(
+            ticker.get_info,
+            alarm_context=f"Fetch metadata for {symbol}",
+        )
     except Exception:
         info = {}
 
@@ -86,15 +105,17 @@ def fetch_current_price(symbol: str) -> float | None:
 
     ticker = yf.Ticker(symbol)
     try:
-        fast_info = ticker.fast_info
-        value = fast_info.get("last_price")
+        value = _retry_fetch(lambda: ticker.fast_info.get("last_price"))
         if value is not None:
             return float(value)
     except Exception:
         pass
 
     try:
-        history = ticker.history(period="1d", interval="1m")
+        history = _retry_fetch(
+            lambda: ticker.history(period="1d", interval="1m"),
+            alarm_context=f"Fetch current price for {symbol}",
+        )
         if not history.empty:
             return float(history["Close"].dropna().iloc[-1])
     except Exception:
@@ -111,14 +132,17 @@ def fetch_current_prices(symbols: list[str]) -> dict[str, float | None]:
 
     unique_symbols = list(dict.fromkeys(symbols))
     try:
-        history = yf.download(
-            unique_symbols,
-            period="1d",
-            interval="1m",
-            auto_adjust=False,
-            progress=False,
-            threads=True,
-            group_by="ticker",
+        history = _retry_fetch(
+            lambda: yf.download(
+                unique_symbols,
+                period="1d",
+                interval="1m",
+                auto_adjust=False,
+                progress=False,
+                threads=True,
+                group_by="ticker",
+            ),
+            alarm_context=f"Fetch current prices for {', '.join(unique_symbols)}",
         )
     except Exception:
         return {symbol: None for symbol in unique_symbols}
@@ -127,6 +151,51 @@ def fetch_current_prices(symbols: list[str]) -> dict[str, float | None]:
         symbol: _latest_close_for_symbol(history, symbol)
         for symbol in unique_symbols
     }
+
+
+def _retry_fetch(
+    function: Callable[[], T],
+    attempts: int = FETCH_RETRY_ATTEMPTS,
+    delay_seconds: float = FETCH_RETRY_DELAY_SECONDS,
+    alarm_context: str | None = None,
+) -> T:
+    last_error = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return function()
+        except ModuleNotFoundError:
+            raise
+        except Exception as exc:
+            last_error = exc
+            if attempt < attempts - 1 and delay_seconds > 0:
+                time.sleep(delay_seconds)
+
+    if last_error is not None:
+        if alarm_context is not None:
+            _send_fetch_failure_alarm(alarm_context, last_error, max(1, attempts))
+        raise last_error
+    raise RuntimeError("Fetch retry failed without an exception.")
+
+
+def _send_fetch_failure_alarm(context: str, error: Exception, attempts: int) -> bool:
+    try:
+        from . import database
+        from .common_settings import common_params
+        from .notifications import send_alarm_notification, telegram_config
+
+        params = common_params(database.list_strategy_configs(database.database_path()))
+        config = telegram_config(params)
+        message = "\n".join(
+            [
+                "Trade Strategy Alarm",
+                f"Task: {context}",
+                f"Status: failed after {attempts} attempts",
+                f"Error: {type(error).__name__}: {error}",
+            ]
+        )
+        return send_alarm_notification(config, message)
+    except Exception:
+        return False
 
 
 def _latest_close_for_symbol(history: pd.DataFrame, symbol: str) -> float | None:

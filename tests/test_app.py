@@ -5,6 +5,8 @@ import pandas as pd
 
 from trade_strategy import database
 from trade_strategy.common_settings import COMMON_CONFIG_NAME
+from trade_strategy.operation_manager import OperationManager
+from trade_strategy.strategies import EMACrossoverStrategy, STRATEGIES
 
 
 fake_market_data = types.ModuleType("trade_strategy.market_data")
@@ -309,6 +311,55 @@ def test_dashboard_marks_strategy_with_operation_on_latest_candle(tmp_path):
     )
     assert b'target="_blank"' in response.data
     assert b'rel="noopener noreferrer"' in response.data
+
+
+def test_dashboard_uses_cached_ema_operations_without_recomputing_evaluate(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": db_path,
+            "AUTO_REFRESH_ENABLED": False,
+        }
+    )
+    ticker_id = database.add_ticker("SPY", "SPY", "stock", path=db_path)
+    history = pd.DataFrame(
+        {
+            "Open": [14, 13, 12, 11, 10, 11, 13, 15],
+            "High": [14, 13, 12, 11, 10, 11, 13, 15],
+            "Low": [14, 13, 12, 11, 10, 11, 13, 15],
+            "Close": [14, 13, 12, 11, 10, 11, 13, 15],
+            "Adj Close": [14, 13, 12, 11, 10, 11, 13, 15],
+            "Volume": [1000] * 8,
+        },
+        index=pd.date_range("2026-06-01", periods=8),
+    )
+    database.save_history(ticker_id, history, db_path)
+    params = {"fast_window": 2, "slow_window": 4}
+    database.update_strategy_config("ema_crossover", True, params, db_path)
+    database.update_strategy_config("macd_trend_following", False, {}, db_path)
+    database.update_strategy_config("turtle_breakout", False, {}, db_path)
+    OperationManager(db_path).operations_for(
+        ticker_id,
+        "ema_crossover",
+        STRATEGIES["ema_crossover"],
+        database.load_history(ticker_id, db_path),
+        params,
+    )
+
+    def fail_evaluate(self, history, params):
+        raise AssertionError("dashboard should use cached EMA operations")
+
+    monkeypatch.setattr(EMACrossoverStrategy, "evaluate", fail_evaluate)
+
+    response = app.test_client().get("/")
+
+    assert response.status_code == 200
+    assert b"EMA Crossover" in response.data
+    assert b"HOLD" in response.data
 
 
 def test_operations_page_renders_open_cycle_chart_dots(tmp_path):

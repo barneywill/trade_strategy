@@ -250,6 +250,7 @@ def save_history(
         )
 
     with connect(path) as connection:
+        previous_changes = connection.total_changes
         connection.executemany(
             """
             INSERT INTO price_history
@@ -262,14 +263,21 @@ def save_history(
                 close = excluded.close,
                 adj_close = excluded.adj_close,
                 volume = excluded.volume
+            WHERE price_history.open IS NOT excluded.open
+               OR price_history.high IS NOT excluded.high
+               OR price_history.low IS NOT excluded.low
+               OR price_history.close IS NOT excluded.close
+               OR price_history.adj_close IS NOT excluded.adj_close
+               OR price_history.volume IS NOT excluded.volume
             """,
             rows,
         )
+        changed_rows = connection.total_changes - previous_changes
         connection.execute(
             "UPDATE tickers SET last_downloaded_at = CURRENT_TIMESTAMP WHERE id = ?",
             (ticker_id,),
         )
-    return len(rows)
+    return changed_rows
 
 
 def load_history(ticker_id: int, path: Path | None = None) -> pd.DataFrame:

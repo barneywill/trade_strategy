@@ -176,14 +176,16 @@ def refresh_realtime_prices(db_path: Path) -> dict[str, float | None]:
         if price is None:
             price = fetch_current_price(ticker["symbol"])
         results[ticker["symbol"]] = price
+        realtime_date = current_realtime_data_date(ticker["asset_type"])
         if price is not None:
             database.save_current_price(ticker["id"], price, db_path)
             database.save_realtime_candle(
                 ticker["id"],
-                current_realtime_data_date(ticker["asset_type"]),
+                realtime_date,
                 price,
                 db_path,
             )
+        previous_operation_keys = _operation_notification_keys_for_ticker(ticker, db_path)
         if price is None or not operation_manager.realtime_operation_triggered(
             int(ticker["id"]),
             price,
@@ -193,9 +195,13 @@ def refresh_realtime_prices(db_path: Path) -> dict[str, float | None]:
 
         history = download_history(ticker["symbol"], "5d")
         if not history.empty:
-            saved_rows = database.save_history(ticker["id"], history, db_path)
-            if saved_rows:
-                _refresh_ticker_operations_after_realtime_change(ticker, db_path)
+            database.save_history(ticker["id"], history, db_path)
+            database.save_realtime_candle(ticker["id"], realtime_date, price, db_path)
+            _refresh_ticker_operations_after_realtime_change(
+                ticker,
+                db_path,
+                previous_operation_keys,
+            )
 
     return results
 
@@ -212,7 +218,11 @@ def _run_realtime_price_scheduler(db_path: Path, frequency_seconds: int) -> None
         threading.Event().wait(frequency_seconds)
 
 
-def _refresh_ticker_operations_after_realtime_change(ticker, db_path: Path) -> None:
+def _refresh_ticker_operations_after_realtime_change(
+    ticker,
+    db_path: Path,
+    previous_operation_keys: dict[str, set[str]] | None = None,
+) -> None:
     configs = database.list_strategy_configs(db_path)
     common = common_params(configs)
     notification_config = telegram_config(common)
@@ -228,14 +238,18 @@ def _refresh_ticker_operations_after_realtime_change(ticker, db_path: Path) -> N
         if not config["enabled"]:
             continue
 
-        previous_keys = {
-            _operation_row_notification_key(row)
-            for row in database.load_strategy_operations(
-                int(ticker["id"]),
-                strategy_name,
-                db_path,
-            )
-        }
+        previous_keys = (
+            previous_operation_keys.get(strategy_name, set())
+            if previous_operation_keys is not None
+            else {
+                _operation_row_notification_key(row)
+                for row in database.load_strategy_operations(
+                    int(ticker["id"]),
+                    strategy_name,
+                    db_path,
+                )
+            }
+        )
         operations = manager.operations_for(
             int(ticker["id"]),
             strategy_name,
@@ -287,6 +301,20 @@ def _operation_row_notification_key(row) -> str:
             f"{float(row['signal_price']):.8f}",
         ]
     )
+
+
+def _operation_notification_keys_for_ticker(ticker, db_path: Path) -> dict[str, set[str]]:
+    return {
+        strategy_name: {
+            _operation_row_notification_key(row)
+            for row in database.load_strategy_operations(
+                int(ticker["id"]),
+                strategy_name,
+                db_path,
+            )
+        }
+        for strategy_name in STRATEGIES
+    }
 
 
 def _run_job(label: str, function, *args) -> None:
