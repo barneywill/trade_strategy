@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hmac
+import json
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,8 @@ from .market_data import (
     fetch_metadata,
     normalize_symbol,
 )
+from .market_calendar import latest_completed_data_date
+from .logging_config import DEFAULT_LOG_DIR, configure_file_logging
 from .operation_manager import OperationManager
 from .refresher import (
     refresh_ticker_if_needed,
@@ -32,11 +36,10 @@ from .strategies import (
     STRATEGIES,
     TradeStrategy,
     default_strategy_params,
-    _ema_metrics,
-    _ema_values,
-    _macd_metrics,
-    _macd_values,
 )
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def create_app(test_config: dict[str, Any] | None = None) -> Flask:
@@ -52,9 +55,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         DAILY_HISTORY_PERIOD="1mo",
         AUTO_REFRESH_ENABLED=os.environ.get("TRADE_STRATEGY_AUTO_REFRESH", "1") != "0",
         ACCESS_PASSWORD=os.environ.get("TRADE_STRATEGY_ACCESS_PASSWORD", ""),
+        LOG_DIR=os.environ.get("TRADE_STRATEGY_LOG_DIR", str(DEFAULT_LOG_DIR)),
     )
     if test_config:
         app.config.update(test_config)
+
+    log_file = configure_file_logging(app.config["LOG_DIR"])
+    LOGGER.info("Trade Strategy app starting; log_file=%s", log_file)
 
     db_path = Path(app.config["DATABASE"])
     database.init_db(db_path)
@@ -125,26 +132,32 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         configs = database.list_strategy_configs(db_path)
         saved_common_params = common_params(configs)
         realtime_prices = database.list_current_prices(db_path)
+        recent_closes = database.list_recent_closes(db_path)
+        cached_operations = database.list_latest_strategy_operations(db_path)
         rows = []
 
         for ticker in tickers:
-            history = database.load_history(ticker["id"], db_path)
+            ticker_id = int(ticker["id"])
             realtime_price = realtime_prices.get(int(ticker["id"]))
+            use_realtime_price = (
+                saved_common_params.get("enable_realtime_updates", False)
+                and realtime_price is not None
+            )
             current_price = (
                 realtime_price["price"]
-                if saved_common_params.get("enable_realtime_updates", False)
-                and realtime_price is not None
+                if use_realtime_price
                 else ticker["last_close"]
             )
             daily_change_pct = calculate_daily_change_pct(
-                history,
+                current_price,
+                recent_closes.get(ticker_id, []),
                 ticker["asset_type"],
+                use_realtime_price,
             )
             strategy_signals = evaluate_strategies(
-                ticker["id"],
-                history,
+                cached_operations.get(ticker_id, {}),
+                latest_strategy_dates(ticker, recent_closes.get(ticker_id, [])),
                 configs,
-                operation_manager,
             )
             rows.append(
                 {
@@ -318,7 +331,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             strategy_name,
             {"enabled": True, "params": strategy.default_params},
         )
-        history = database.load_history(ticker_id, db_path)
+        history = strategy_history_for_view(
+            database.load_history(ticker_id, db_path),
+            strategy_name,
+            ticker["asset_type"],
+        )
         operations = operation_manager.operations_for(
             ticker_id,
             strategy_name,
@@ -381,7 +398,11 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             strategy_name,
             {"enabled": True, "params": strategy.default_params},
         )
-        history = database.load_history(ticker_id, db_path)
+        history = strategy_history_for_view(
+            database.load_history(ticker_id, db_path),
+            strategy_name,
+            ticker["asset_type"],
+        )
         operations = operation_manager.operations_for(
             ticker_id,
             strategy_name,
@@ -403,10 +424,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
 
 def evaluate_strategies(
-    ticker_id: int,
-    history,
+    operations_by_strategy: dict[str, list],
+    latest_dates: dict[str, str | None],
     configs: dict[str, dict[str, Any]],
-    operation_manager: OperationManager,
 ) -> dict[str, dict[str, Any]]:
     results = {}
     for strategy_name, strategy in STRATEGIES.items():
@@ -427,14 +447,10 @@ def evaluate_strategies(
             }
             continue
 
-        operations = operation_manager.operations_for(
-            ticker_id,
-            strategy_name,
-            strategy,
-            history,
-            config["params"],
+        operations = strategy_operations_from_rows(
+            operations_by_strategy.get(strategy_name, [])
         )
-        latest_date = latest_history_date(history)
+        latest_date = latest_dates.get(strategy_name)
         if strategy_name == "turtle_breakout":
             results[strategy_name] = turtle_signal_from_operations(
                 strategy.label,
@@ -447,7 +463,7 @@ def evaluate_strategies(
                 "EMA",
                 operations,
                 latest_date,
-                latest_ema_metrics(history, config["params"]),
+                latest_operation_metrics(operations),
             )
         elif strategy_name == "macd_trend_following":
             results[strategy_name] = directional_signal_from_operations(
@@ -455,58 +471,104 @@ def evaluate_strategies(
                 "MACD trend",
                 operations,
                 latest_date,
-                latest_macd_metrics(history, config["params"]),
+                latest_operation_metrics(operations),
             )
         else:
-            result = strategy.evaluate(history, config["params"])
             results[strategy_name] = {
                 "label": strategy.label,
-                "signal": result.signal,
-                "signal_class": result.signal_class or result.signal.lower(),
-                "direction": result.direction,
-                "operation": result.operation,
-                "operation_on_latest_candle": any(
-                    operation.trade_date == latest_date for operation in operations
-                ),
-                "detail": result.detail,
-                "metrics": result.metrics,
+                "signal": "WAIT",
+                "signal_class": "hold",
+                "direction": None,
+                "operation": None,
+                "operation_on_latest_candle": False,
+                "detail": "No cached operation history.",
+                "metrics": {},
             }
     return results
 
 
-def latest_ema_metrics(history, params: dict[str, Any]) -> dict[str, float]:
-    frame = history.dropna(subset=["close"]).copy()
-    values = _ema_values(frame, params)
-    if values is None:
-        return {}
-    return _ema_metrics(
-        values.iloc[-1],
-        bool(params.get("use_trend_filter", False)),
-    )
+def strategy_operations_from_rows(rows) -> list:
+    from .strategies import StrategyOperation
+
+    return [
+        StrategyOperation(
+            trade_date=row["trade_date"],
+            direction=row["direction"],
+            operation=row["operation"],
+            price=row["price"],
+            signal_price=row["signal_price"],
+            detail=row["detail"],
+            metrics=json.loads(row["metrics_json"]),
+            signal_class=row["signal_class"],
+            position_size=row["position_size"],
+            position_notional=row["position_notional"],
+            realized_pnl=row["realized_pnl"],
+            balance_after=row["balance_after"],
+        )
+        for row in rows
+    ]
 
 
-def latest_macd_metrics(history, params: dict[str, Any]) -> dict[str, float | str]:
-    frame = history.dropna(subset=["close"]).copy()
-    macd = _macd_values(frame, params)
-    if macd is None:
-        return {}
-    return _macd_metrics(
-        macd.iloc[-1],
-        bool(params.get("use_trend_filter", True)),
-    )
+def latest_operation_metrics(operations) -> dict[str, float | str]:
+    return operations[-1].metrics if operations else {}
 
 
-def calculate_daily_change_pct(history, asset_type: str) -> float | None:
-    frame = history.dropna(subset=["close"])
-    if len(frame.index) < 2:
+def latest_strategy_dates(ticker, recent_closes) -> dict[str, str | None]:
+    latest_realtime_date = ticker["last_trade_date"]
+    completed_date = latest_completed_data_date(ticker["asset_type"]).isoformat()
+    latest_completed_date = None
+    for close in recent_closes:
+        if close["trade_date"] <= completed_date:
+            latest_completed_date = close["trade_date"]
+            break
+
+    return {
+        strategy_name: (
+            latest_realtime_date
+            if strategy_name == "turtle_breakout"
+            else latest_completed_date
+        )
+        for strategy_name in STRATEGIES
+    }
+
+
+def strategy_history_for_view(history, strategy_name: str, asset_type: str):
+    if strategy_name == "turtle_breakout" or history.empty:
+        return history
+
+    completed_date = latest_completed_data_date(asset_type)
+    return history[history.index.date <= completed_date]
+
+
+def calculate_daily_change_pct(
+    current_price: float | None,
+    recent_closes,
+    asset_type: str,
+    compare_to_latest_close: bool = False,
+) -> float | None:
+    if current_price is None or not recent_closes:
         return None
 
-    latest_close = float(frame["close"].iloc[-1])
-    previous_close = float(frame["close"].iloc[-2])
+    if compare_to_latest_close:
+        completed_date = latest_completed_data_date(asset_type).isoformat()
+        previous_close = None
+        for close in recent_closes:
+            if close["trade_date"] <= completed_date:
+                previous_close = float(close["close"])
+                break
+    else:
+        latest_close_date = recent_closes[0]["trade_date"]
+        previous_close = None
+        for close in recent_closes:
+            if close["trade_date"] < latest_close_date:
+                previous_close = float(close["close"])
+                break
+    if previous_close is None:
+        return None
     if previous_close == 0:
         return None
 
-    change_pct = ((latest_close - previous_close) / previous_close) * 100.0
+    change_pct = ((float(current_price) - previous_close) / previous_close) * 100.0
 
     # Filter provider glitches (for example sudden unit/currency shifts) from dashboard output.
     max_abs_change = 40.0 if asset_type == "crypto" else 25.0
@@ -514,13 +576,6 @@ def calculate_daily_change_pct(history, asset_type: str) -> float | None:
         return None
 
     return change_pct
-
-
-def latest_history_date(history) -> str | None:
-    frame = history.dropna(subset=["close"])
-    if frame.empty:
-        return None
-    return frame.index[-1].date().isoformat()
 
 
 def turtle_signal_from_operations(

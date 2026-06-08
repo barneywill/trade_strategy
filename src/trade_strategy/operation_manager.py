@@ -3,38 +3,48 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
 from . import database
+from .market_calendar import latest_completed_data_date
 from .strategies import (
     ADD_POSITION,
-    EMACrossoverStrategy,
     ENTRY,
     EXIT,
     LONG,
-    MACDTrendFollowingStrategy,
+    OperationType,
     SHORT,
     STRATEGIES,
     TurtleBreakoutStrategy,
     StrategyOperation,
     TradeStrategy,
-    _current_direction_from_operations,
-    _ema_values,
-    _macd_values,
     _next_add_price,
-    _passes_ema_trend_filter,
-    _passes_macd_trend_filter,
     _turtle_exit_levels,
     _turtle_levels,
 )
 
 
 _REALTIME_TRIGGER_STATES: dict[
-    tuple[str, int, str], "_RealtimeTriggerState"
+    tuple[str, int, str], "_CachedRealtimeTriggerState"
 ] = {}
+
+
+@dataclass(frozen=True)
+class _CachedRealtimeTriggerState:
+    params_key: str
+    realtime_date: str | None
+    state: "_RealtimeTriggerState"
+
+
+@dataclass(frozen=True)
+class RealtimeOperationCandidate:
+    direction: str
+    operation: OperationType
+    signal_price: float | None = None
 
 
 class OperationManager:
@@ -72,58 +82,81 @@ class OperationManager:
         self,
         ticker_id: int,
         configs: dict[str, dict[str, Any]] | None = None,
+        asset_type: str | None = None,
     ) -> None:
         configs = configs or database.list_strategy_configs(self.db_path)
         history = database.load_history(ticker_id, self.db_path)
         for strategy_name, strategy in STRATEGIES.items():
-            config = configs.get(
-                strategy_name,
-                {"enabled": True, "params": strategy.default_params},
-            )
+            config = configs.get(strategy_name)
+            if config is None:
+                config = {"enabled": True, "params": strategy.default_params}
             if config["enabled"]:
                 self.operations_for(
                     ticker_id,
                     strategy_name,
                     strategy,
-                    history,
+                    _completed_strategy_history(history, strategy_name, asset_type),
                     config["params"],
                 )
+                if strategy_name == "turtle_breakout":
+                    self.invalidate_realtime_trigger_state(ticker_id, strategy_name)
 
     def refresh_all(self, configs: dict[str, dict[str, Any]] | None = None) -> None:
         configs = configs or database.list_strategy_configs(self.db_path)
         for ticker in database.list_tickers(self.db_path):
-            self.refresh_ticker(int(ticker["id"]), configs)
+            self.refresh_ticker(int(ticker["id"]), configs, ticker["asset_type"])
 
     def realtime_operation_triggered(
         self,
         ticker_id: int,
         current_price: float,
         configs: dict[str, dict[str, Any]] | None = None,
+        realtime_date: date | None = None,
     ) -> bool:
-        configs = configs or database.list_strategy_configs(self.db_path)
-        history = database.load_history(ticker_id, self.db_path)
-        if history.empty:
-            return False
-
-        for strategy_name, strategy in STRATEGIES.items():
-            config = configs.get(
-                strategy_name,
-                {"enabled": True, "params": strategy.default_params},
-            )
-            if not config["enabled"]:
-                continue
-
-            state = self._realtime_trigger_state(
+        return bool(
+            self.realtime_operation_candidates(
                 ticker_id,
-                strategy_name,
-                strategy,
-                history,
-                config["params"],
+                current_price,
+                configs,
+                realtime_date,
             )
-            if state is not None and state.triggered(float(current_price)):
-                return True
+        )
 
-        return False
+    def realtime_operation_candidates(
+        self,
+        ticker_id: int,
+        current_price: float,
+        configs: dict[str, dict[str, Any]] | None = None,
+        realtime_date: date | None = None,
+    ) -> dict[str, list[RealtimeOperationCandidate]]:
+        configs = configs or database.list_strategy_configs(self.db_path)
+        strategy_name = "turtle_breakout"
+        strategy = STRATEGIES[strategy_name]
+        config = configs.get(strategy_name)
+        if config is None:
+            config = {"enabled": True, "params": strategy.default_params}
+        if not config["enabled"]:
+            return {}
+
+        state = self._turtle_realtime_trigger_state(
+            ticker_id,
+            strategy_name,
+            strategy,
+            config["params"],
+            realtime_date,
+        )
+        if state is None:
+            return {}
+
+        operations = state.triggered_operations(float(current_price))
+        return {strategy_name: operations} if operations else {}
+
+    def invalidate_realtime_trigger_state(
+        self,
+        ticker_id: int,
+        strategy_name: str = "turtle_breakout",
+    ) -> None:
+        _REALTIME_TRIGGER_STATES.pop((str(self.db_path), ticker_id, strategy_name), None)
 
     def _load_operations(
         self,
@@ -152,27 +185,42 @@ class OperationManager:
             )
         ]
 
-    def _realtime_trigger_state(
+    def _turtle_realtime_trigger_state(
         self,
         ticker_id: int,
         strategy_name: str,
         strategy: TradeStrategy,
-        history: pd.DataFrame,
         params: dict[str, Any],
+        realtime_date: date | None,
     ) -> "_RealtimeTriggerState | None":
-        cache_key = operation_cache_key(strategy_name, params, history)
+        params_key = params_signature(params)
+        realtime_date_key = realtime_date.isoformat() if realtime_date else None
         state_key = (str(self.db_path), ticker_id, strategy_name)
-        state = _REALTIME_TRIGGER_STATES.get(state_key)
-        if state is not None and state.cache_key == cache_key:
-            return state
+        cached = _REALTIME_TRIGGER_STATES.get(state_key)
+        if (
+            cached is not None
+            and cached.params_key == params_key
+            and cached.realtime_date == realtime_date_key
+        ):
+            return cached.state
 
-        operations = self.operations_for(
-            ticker_id,
-            strategy_name,
-            strategy,
-            history,
-            params,
-        )
+        history = database.load_history(ticker_id, self.db_path)
+        if realtime_date is not None:
+            history = _completed_history_before(history, realtime_date)
+        if history.empty:
+            _REALTIME_TRIGGER_STATES.pop(state_key, None)
+            return None
+
+        cache_key = operation_cache_key(strategy_name, params, history)
+        operations = self._load_operations(ticker_id, strategy_name)
+        if not operations:
+            operations = self.operations_for(
+                ticker_id,
+                strategy_name,
+                strategy,
+                history,
+                params,
+            )
         state = _build_realtime_trigger_state(
             strategy_name,
             strategy,
@@ -184,7 +232,11 @@ class OperationManager:
         if state is None:
             _REALTIME_TRIGGER_STATES.pop(state_key, None)
         else:
-            _REALTIME_TRIGGER_STATES[state_key] = state
+            _REALTIME_TRIGGER_STATES[state_key] = _CachedRealtimeTriggerState(
+                params_key=params_key,
+                realtime_date=realtime_date_key,
+                state=state,
+            )
         return state
 
 
@@ -199,6 +251,11 @@ def operation_cache_key(
         "history": history_signature(history),
     }
     raw_payload = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw_payload.encode("utf-8")).hexdigest()
+
+
+def params_signature(params: dict[str, Any]) -> str:
+    raw_payload = json.dumps(params, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw_payload.encode("utf-8")).hexdigest()
 
 
@@ -226,104 +283,32 @@ def _optional_float(value) -> float | None:
     return round(float(value), 8)
 
 
+def _completed_history_before(history: pd.DataFrame, realtime_date: date) -> pd.DataFrame:
+    if history.empty:
+        return history
+    return history[history.index.date < realtime_date]
+
+
+def _completed_strategy_history(
+    history: pd.DataFrame,
+    strategy_name: str,
+    asset_type: str | None,
+) -> pd.DataFrame:
+    if strategy_name == "turtle_breakout" or asset_type is None or history.empty:
+        return history
+
+    completed_date = latest_completed_data_date(asset_type)
+    return history[history.index.date <= completed_date]
+
+
 @dataclass(frozen=True)
 class _RealtimeTriggerState:
     cache_key: str
 
-    def triggered(self, current_price: float) -> bool:
-        return False
-
-
-@dataclass(frozen=True)
-class _EmaRealtimeTriggerState(_RealtimeTriggerState):
-    direction: str | None
-    previous_fast: float
-    previous_slow: float
-    prior_fast_before_latest: float
-    prior_slow_before_latest: float
-    prior_trend_ema: float
-    fast_alpha: float
-    slow_alpha: float
-    trend_alpha: float
-    use_trend_filter: bool
-
-    def triggered(self, current_price: float) -> bool:
-        fast = self.fast_alpha * current_price + (1.0 - self.fast_alpha) * self.prior_fast_before_latest
-        slow = self.slow_alpha * current_price + (1.0 - self.slow_alpha) * self.prior_slow_before_latest
-        trend_ema = self.trend_alpha * current_price + (1.0 - self.trend_alpha) * self.prior_trend_ema
-        values = pd.Series(
-            {
-                "fast_ema": fast,
-                "slow_ema": slow,
-                "trend_ema": trend_ema,
-            }
-        )
-        crossed_long = self.previous_fast <= self.previous_slow and fast > slow
-        crossed_short = self.previous_fast >= self.previous_slow and fast < slow
-        long_direction = fast > slow
-        short_direction = fast < slow
-        long_allowed = _passes_ema_trend_filter(
-            current_price,
-            values,
-            LONG,
-            self.use_trend_filter,
-        )
-        short_allowed = _passes_ema_trend_filter(
-            current_price,
-            values,
-            SHORT,
-            self.use_trend_filter,
-        )
-
-        if self.direction == LONG:
-            return crossed_short or not long_allowed
-        if self.direction == SHORT:
-            return crossed_long or not short_allowed
-        return (long_direction and long_allowed) or (short_direction and short_allowed)
-
-
-@dataclass(frozen=True)
-class _MacdRealtimeTriggerState(_RealtimeTriggerState):
-    direction: str | None
-    previous_macd: float
-    previous_signal: float
-    prior_fast_ema: float
-    prior_slow_ema: float
-    prior_signal: float
-    prior_trend_ema: float
-    fast_alpha: float
-    slow_alpha: float
-    signal_alpha: float
-    trend_alpha: float
-    use_trend_filter: bool
-
-    def triggered(self, current_price: float) -> bool:
-        fast_ema = self.fast_alpha * current_price + (1.0 - self.fast_alpha) * self.prior_fast_ema
-        slow_ema = self.slow_alpha * current_price + (1.0 - self.slow_alpha) * self.prior_slow_ema
-        macd = fast_ema - slow_ema
-        signal = self.signal_alpha * macd + (1.0 - self.signal_alpha) * self.prior_signal
-        trend_ema = self.trend_alpha * current_price + (1.0 - self.trend_alpha) * self.prior_trend_ema
-        values = pd.Series({"macd": macd, "signal": signal, "trend_ema": trend_ema})
-        crossed_long = self.previous_macd <= self.previous_signal and macd > signal
-        crossed_short = self.previous_macd >= self.previous_signal and macd < signal
-        long_allowed = _passes_macd_trend_filter(
-            current_price,
-            values,
-            LONG,
-            self.use_trend_filter,
-        )
-        short_allowed = _passes_macd_trend_filter(
-            current_price,
-            values,
-            SHORT,
-            self.use_trend_filter,
-        )
-
-        if self.direction == LONG:
-            return crossed_short or not long_allowed
-        if self.direction == SHORT:
-            return crossed_long or not short_allowed
-        return (crossed_long and long_allowed) or (crossed_short and short_allowed)
+    def triggered_operations(
+        self, current_price: float
+    ) -> list[RealtimeOperationCandidate]:
+        return []
 
 
 @dataclass(frozen=True)
@@ -341,43 +326,63 @@ class _TurtleRealtimeTriggerState(_RealtimeTriggerState):
     entry_atr: float | None
     exit_atr_ratio: float
 
-    def triggered(self, current_price: float) -> bool:
+    def triggered_operations(
+        self, current_price: float
+    ) -> list[RealtimeOperationCandidate]:
         if self.direction is None:
             if current_price > self.entry_high:
-                return self._passes_filter(current_price, LONG)
+                return (
+                    [RealtimeOperationCandidate(LONG, ENTRY)]
+                    if self._passes_filter(current_price, LONG)
+                    else []
+                )
             if current_price < self.entry_low:
-                return self._passes_filter(current_price, SHORT)
-            return False
+                return (
+                    [RealtimeOperationCandidate(SHORT, ENTRY)]
+                    if self._passes_filter(current_price, SHORT)
+                    else []
+                )
+            return []
 
         exit_price = self._exit_price()
         if self.direction == LONG:
             if exit_price is not None and current_price <= exit_price:
-                return True
+                return [RealtimeOperationCandidate(LONG, EXIT)]
             add_price = _next_add_price(
                 self.last_unit_signal_price,
                 self.entry_atr,
                 LONG,
             )
-            return (
+            should_add = (
                 add_price is not None
                 and current_price > add_price
                 and self.units < self.max_units
                 and self._passes_filter(current_price, LONG)
             )
+            return (
+                [RealtimeOperationCandidate(LONG, ADD_POSITION, add_price)]
+                if should_add
+                else []
+            )
 
         exit_price = self._exit_price()
         if exit_price is not None and current_price >= exit_price:
-            return True
+            return [RealtimeOperationCandidate(SHORT, EXIT)]
         add_price = _next_add_price(
             self.last_unit_signal_price,
             self.entry_atr,
             SHORT,
         )
-        return (
+        should_add = (
             add_price is not None
             and current_price < add_price
             and self.units < self.max_units
             and self._passes_filter(current_price, SHORT)
+        )
+        return (
+            [RealtimeOperationCandidate(SHORT, ADD_POSITION, add_price)]
+            if should_add
+            else []
         )
 
     def _passes_filter(self, current_price: float, direction: str) -> bool:
@@ -420,81 +425,7 @@ def _build_realtime_trigger_state(
 ) -> _RealtimeTriggerState | None:
     if isinstance(strategy, TurtleBreakoutStrategy) or strategy_name == "turtle_breakout":
         return _build_turtle_realtime_trigger_state(history, params, operations, cache_key)
-    if isinstance(strategy, MACDTrendFollowingStrategy) or strategy_name == "macd_trend_following":
-        return _build_macd_realtime_trigger_state(history, params, operations, cache_key)
-    if isinstance(strategy, EMACrossoverStrategy) or strategy_name == "ema_crossover":
-        return _build_ema_realtime_trigger_state(history, params, operations, cache_key)
     return None
-
-
-def _build_ema_realtime_trigger_state(
-    history: pd.DataFrame,
-    params: dict[str, Any],
-    operations: list[StrategyOperation],
-    cache_key: str,
-) -> _EmaRealtimeTriggerState | None:
-    frame = history.dropna(subset=["close"]).copy()
-    fast_window = int(params.get("fast_window", 12))
-    slow_window = int(params.get("slow_window", 26))
-    trend_ema_window = int(params.get("trend_ema_window", 200))
-    values = _ema_values(frame, params)
-    if values is None or len(values) < 2:
-        return None
-
-    close = frame["close"].astype(float)
-    fast = close.ewm(span=fast_window, adjust=False).mean()
-    slow = close.ewm(span=slow_window, adjust=False).mean()
-    trend = close.ewm(span=trend_ema_window, adjust=False).mean()
-    return _EmaRealtimeTriggerState(
-        cache_key=cache_key,
-        direction=_current_direction_from_operations(operations),
-        previous_fast=float(fast.iloc[-2]),
-        previous_slow=float(slow.iloc[-2]),
-        prior_fast_before_latest=float(fast.iloc[-2]),
-        prior_slow_before_latest=float(slow.iloc[-2]),
-        prior_trend_ema=float(trend.iloc[-2]),
-        fast_alpha=2.0 / (fast_window + 1.0),
-        slow_alpha=2.0 / (slow_window + 1.0),
-        trend_alpha=2.0 / (trend_ema_window + 1.0),
-        use_trend_filter=bool(params.get("use_trend_filter", False)),
-    )
-
-
-def _build_macd_realtime_trigger_state(
-    history: pd.DataFrame,
-    params: dict[str, Any],
-    operations: list[StrategyOperation],
-    cache_key: str,
-) -> _MacdRealtimeTriggerState | None:
-    frame = history.dropna(subset=["close"]).copy()
-    fast_window = int(params.get("fast_window", 12))
-    slow_window = int(params.get("slow_window", 26))
-    signal_window = int(params.get("signal_window", 9))
-    trend_ema_window = int(params.get("trend_ema_window", 200))
-    values = _macd_values(frame, params)
-    if values is None or len(values) < 2:
-        return None
-
-    close = frame["close"].astype(float)
-    fast = close.ewm(span=fast_window, adjust=False).mean()
-    slow = close.ewm(span=slow_window, adjust=False).mean()
-    previous = values.iloc[-2]
-    direction = _current_direction_from_operations(operations)
-    return _MacdRealtimeTriggerState(
-        cache_key=cache_key,
-        direction=direction,
-        previous_macd=float(previous["macd"]),
-        previous_signal=float(previous["signal"]),
-        prior_fast_ema=float(fast.iloc[-2]),
-        prior_slow_ema=float(slow.iloc[-2]),
-        prior_signal=float(previous["signal"]),
-        prior_trend_ema=float(values["trend_ema"].iloc[-2]),
-        fast_alpha=2.0 / (fast_window + 1.0),
-        slow_alpha=2.0 / (slow_window + 1.0),
-        signal_alpha=2.0 / (signal_window + 1.0),
-        trend_alpha=2.0 / (trend_ema_window + 1.0),
-        use_trend_filter=bool(params.get("use_trend_filter", True)),
-    )
 
 
 def _build_turtle_realtime_trigger_state(

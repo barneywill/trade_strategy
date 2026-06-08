@@ -303,6 +303,34 @@ def load_history(ticker_id: int, path: Path | None = None) -> pd.DataFrame:
     return frame
 
 
+def list_recent_closes(
+    path: Path | None = None,
+    limit_per_ticker: int = 2,
+) -> dict[int, list[sqlite3.Row]]:
+    with connect(path) as connection:
+        rows = connection.execute(
+            """
+            SELECT ticker_id, trade_date, close
+            FROM (
+                SELECT ticker_id, trade_date, close,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ticker_id
+                           ORDER BY trade_date DESC
+                       ) AS row_number
+                FROM price_history
+            )
+            WHERE row_number <= ?
+            ORDER BY ticker_id, trade_date DESC
+            """,
+            (limit_per_ticker,),
+        ).fetchall()
+
+    closes: dict[int, list[sqlite3.Row]] = {}
+    for row in rows:
+        closes.setdefault(int(row["ticker_id"]), []).append(row)
+    return closes
+
+
 def list_strategy_configs(path: Path | None = None) -> dict[str, dict[str, Any]]:
     with connect(path) as connection:
         rows = connection.execute(
@@ -495,6 +523,37 @@ def load_strategy_operations(
         )
 
 
+def list_latest_strategy_operations(
+    path: Path | None = None,
+) -> dict[int, dict[str, list[sqlite3.Row]]]:
+    with connect(path) as connection:
+        rows = connection.execute(
+            """
+            SELECT ticker_id, strategy_name, trade_date, direction, operation,
+                   price, signal_price, detail, metrics_json, signal_class,
+                   position_size, position_notional, realized_pnl, balance_after
+            FROM (
+                SELECT ticker_id, strategy_name, trade_date, direction, operation,
+                       price, signal_price, detail, metrics_json, signal_class,
+                       position_size, position_notional, realized_pnl, balance_after,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY ticker_id, strategy_name
+                           ORDER BY sequence DESC
+                       ) AS row_number
+                FROM strategy_operations
+            )
+            WHERE row_number = 1
+            ORDER BY ticker_id, strategy_name
+            """
+        ).fetchall()
+
+    operations: dict[int, dict[str, list[sqlite3.Row]]] = {}
+    for row in rows:
+        ticker_operations = operations.setdefault(int(row["ticker_id"]), {})
+        ticker_operations.setdefault(row["strategy_name"], []).append(row)
+    return operations
+
+
 def mark_operation_notification_sent(
     ticker_id: int,
     strategy_name: str,
@@ -524,11 +583,25 @@ def operation_notification_sent(
             """
             SELECT 1
             FROM operation_notifications
-            WHERE ticker_id = ? AND strategy_name = ? AND notification_key = ?
+            WHERE ticker_id = ?
+              AND strategy_name = ?
+              AND (
+                notification_key = ?
+                OR notification_key LIKE ? ESCAPE '\\'
+              )
             """,
-            (ticker_id, strategy_name, notification_key),
+            (
+                ticker_id,
+                strategy_name,
+                notification_key,
+                f"{_escape_like(notification_key)}|%",
+            ),
         ).fetchone()
     return row is not None
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def _optional_float(value: Any) -> float | None:

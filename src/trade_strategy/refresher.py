@@ -24,6 +24,7 @@ from .notifications import (
 )
 from .operation_manager import OperationManager
 from .strategies import STRATEGIES
+from .strategies import ADD_POSITION
 
 
 LOGGER = logging.getLogger(__name__)
@@ -125,7 +126,10 @@ def refresh_ticker_if_needed(
     history = _keep_completed_rows(history, expected_date)
     saved_rows = database.save_history(ticker["id"], history, db_path)
     if saved_rows:
-        OperationManager(db_path).refresh_ticker(int(ticker["id"]))
+        OperationManager(db_path).refresh_ticker(
+            int(ticker["id"]),
+            asset_type=ticker["asset_type"],
+        )
     return saved_rows
 
 
@@ -179,28 +183,58 @@ def refresh_realtime_prices(db_path: Path) -> dict[str, float | None]:
         realtime_date = current_realtime_data_date(ticker["asset_type"])
         if price is not None:
             database.save_current_price(ticker["id"], price, db_path)
-            database.save_realtime_candle(
-                ticker["id"],
-                realtime_date,
-                price,
-                db_path,
-            )
-        previous_operation_keys = _operation_notification_keys_for_ticker(ticker, db_path)
-        if price is None or not operation_manager.realtime_operation_triggered(
+        if price is None:
+            continue
+        operation_candidates = operation_manager.realtime_operation_candidates(
             int(ticker["id"]),
             price,
             configs,
+            realtime_date,
+        )
+        if not operation_candidates:
+            continue
+
+        LOGGER.info(
+            "Realtime candidate detected for %s on %s: %s",
+            ticker["symbol"],
+            realtime_date.isoformat(),
+            {
+                strategy_name: [
+                    f"{candidate.direction}:{candidate.operation}"
+                    for candidate in candidates
+                ]
+                for strategy_name, candidates in operation_candidates.items()
+            },
+        )
+        previous_operation_keys = _operation_notification_keys_for_ticker(
+            ticker,
+            db_path,
+            set(operation_candidates),
+        )
+        if not _has_unseen_realtime_candidate(
+            int(ticker["id"]),
+            operation_candidates,
+            realtime_date,
+            previous_operation_keys,
+            db_path,
         ):
             continue
 
         history = download_history(ticker["symbol"], "5d")
         if not history.empty:
-            database.save_history(ticker["id"], history, db_path)
+            saved_rows = database.save_history(ticker["id"], history, db_path)
             database.save_realtime_candle(ticker["id"], realtime_date, price, db_path)
+            LOGGER.info(
+                "Realtime refresh saved %s history row(s) for %s at price %.8f.",
+                saved_rows,
+                ticker["symbol"],
+                price,
+            )
             _refresh_ticker_operations_after_realtime_change(
                 ticker,
                 db_path,
                 previous_operation_keys,
+                {"turtle_breakout"},
             )
 
     return results
@@ -222,6 +256,7 @@ def _refresh_ticker_operations_after_realtime_change(
     ticker,
     db_path: Path,
     previous_operation_keys: dict[str, set[str]] | None = None,
+    strategy_names: set[str] | None = None,
 ) -> None:
     configs = database.list_strategy_configs(db_path)
     common = common_params(configs)
@@ -231,6 +266,9 @@ def _refresh_ticker_operations_after_realtime_change(
     manager = OperationManager(db_path)
 
     for strategy_name, strategy in STRATEGIES.items():
+        if strategy_names is not None and strategy_name not in strategy_names:
+            continue
+
         config = configs.get(
             strategy_name,
             {"enabled": True, "params": strategy.default_params},
@@ -257,6 +295,11 @@ def _refresh_ticker_operations_after_realtime_change(
             history,
             config["params"],
         )
+        if strategy_name == "turtle_breakout":
+            manager.invalidate_realtime_trigger_state(
+                int(ticker["id"]),
+                strategy_name,
+            )
         if not notification_config.configured or latest_date is None:
             continue
 
@@ -283,7 +326,14 @@ def _refresh_ticker_operations_after_realtime_change(
                     notification_key,
                     db_path,
                 )
-
+                LOGGER.info(
+                    "Sent operation notification for %s %s %s %s on %s.",
+                    ticker["symbol"],
+                    strategy_name,
+                    operation.direction,
+                    operation.operation,
+                    operation.trade_date,
+                )
 
 def _latest_history_date(history: pd.DataFrame) -> str | None:
     frame = history.dropna(subset=["close"])
@@ -293,17 +343,64 @@ def _latest_history_date(history: pd.DataFrame) -> str | None:
 
 
 def _operation_row_notification_key(row) -> str:
-    return "|".join(
-        [
-            row["trade_date"],
-            row["direction"],
-            row["operation"],
-            f"{float(row['signal_price']):.8f}",
-        ]
-    )
+    parts = [
+        row["trade_date"],
+        row["direction"],
+        row["operation"],
+    ]
+    if row["operation"] == ADD_POSITION:
+        parts.append(f"{float(row['signal_price']):.8f}")
+    return "|".join(parts)
 
 
-def _operation_notification_keys_for_ticker(ticker, db_path: Path) -> dict[str, set[str]]:
+def _has_unseen_realtime_candidate(
+    ticker_id: int,
+    operation_candidates: dict[str, list],
+    realtime_date: date,
+    previous_operation_keys: dict[str, set[str]],
+    db_path: Path,
+) -> bool:
+    trade_date = realtime_date.isoformat()
+    for strategy_name, candidates in operation_candidates.items():
+        previous_keys = previous_operation_keys.get(strategy_name, set())
+        for candidate in candidates:
+            notification_key = _operation_candidate_notification_key(
+                trade_date,
+                candidate.direction,
+                candidate.operation,
+                candidate.signal_price,
+            )
+            if notification_key in previous_keys:
+                continue
+            if database.operation_notification_sent(
+                ticker_id,
+                strategy_name,
+                notification_key,
+                db_path,
+            ):
+                continue
+            return True
+    return False
+
+
+def _operation_candidate_notification_key(
+    trade_date: str,
+    direction: str,
+    operation: str,
+    signal_price: float | None = None,
+) -> str:
+    parts = [trade_date, direction, operation]
+    if operation == ADD_POSITION and signal_price is not None:
+        parts.append(f"{signal_price:.8f}")
+    return "|".join(parts)
+
+
+def _operation_notification_keys_for_ticker(
+    ticker,
+    db_path: Path,
+    strategy_names: set[str] | None = None,
+) -> dict[str, set[str]]:
+    strategy_names = strategy_names or set(STRATEGIES)
     return {
         strategy_name: {
             _operation_row_notification_key(row)
@@ -313,7 +410,7 @@ def _operation_notification_keys_for_ticker(ticker, db_path: Path) -> dict[str, 
                 db_path,
             )
         }
-        for strategy_name in STRATEGIES
+        for strategy_name in strategy_names
     }
 
 

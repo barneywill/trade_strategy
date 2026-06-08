@@ -5,7 +5,7 @@ import logging
 from dataclasses import dataclass
 from urllib import parse, request
 
-from .strategies import StrategyOperation
+from .strategies import ADD_POSITION, StrategyOperation
 
 
 LOGGER = logging.getLogger(__name__)
@@ -110,11 +110,11 @@ def format_operation_message(ticker, strategy_label: str, operation: StrategyOpe
 
 
 def operation_notification_key(operation: StrategyOperation) -> str:
-    return "|".join(
-        [
-            operation.trade_date,
-            operation.direction,
-            operation.operation,
-            f"{operation.signal_price:.8f}",
-        ]
-    )
+    parts = [
+        operation.trade_date,
+        operation.direction,
+        operation.operation,
+    ]
+    if operation.operation == ADD_POSITION:
+        parts.append(f"{operation.signal_price:.8f}")
+    return "|".join(parts)

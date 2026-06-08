@@ -5,6 +5,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PYTHONPATH=/app/src \
     TRADE_STRATEGY_DB=/app/data/trade_strategy.sqlite3 \
+    TRADE_STRATEGY_LOG_DIR=/tmp/trade_strategy \
     TRADE_STRATEGY_AUTO_REFRESH=1
 
 WORKDIR /app
@@ -16,6 +17,7 @@ RUN pip install --upgrade pip \
 COPY src ./src
 COPY data ./data
 COPY README.md ./README.md
+RUN mkdir -p /tmp/trade_strategy
 
 ARG ACCESS_PASSWORD=""
 ENV TRADE_STRATEGY_ACCESS_PASSWORD=${ACCESS_PASSWORD}

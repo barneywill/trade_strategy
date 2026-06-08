@@ -4,7 +4,8 @@ from datetime import date
 from trade_strategy import database
 from trade_strategy import refresher
 from trade_strategy.common_settings import COMMON_CONFIG_NAME, COMMON_DEFAULTS
-from trade_strategy.strategies import ENTRY, LONG, StrategyOperation
+from trade_strategy.operation_manager import RealtimeOperationCandidate
+from trade_strategy.strategies import ADD_POSITION, ENTRY, LONG, StrategyOperation
 
 
 def test_realtime_refresh_updates_crypto_latest_daily_candle(tmp_path, monkeypatch):
@@ -36,8 +37,10 @@ def test_realtime_refresh_updates_crypto_latest_daily_candle(tmp_path, monkeypat
     )
     monkeypatch.setattr(
         refresher.OperationManager,
-        "realtime_operation_triggered",
-        lambda self, ticker_id, price, configs=None: True,
+        "realtime_operation_candidates",
+        lambda self, ticker_id, price, configs=None, realtime_date=None: {
+            "ema_crossover": [RealtimeOperationCandidate(LONG, ENTRY)]
+        },
     )
     monkeypatch.setattr(refresher, "download_history", lambda symbol, period: latest_history)
 
@@ -85,8 +88,15 @@ def test_realtime_refresh_batches_eligible_tickers(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         refresher.OperationManager,
-        "realtime_operation_triggered",
-        lambda self, ticker_id, price, configs=None: False,
+        "realtime_operation_candidates",
+        lambda self, ticker_id, price, configs=None, realtime_date=None: {},
+    )
+    monkeypatch.setattr(
+        database,
+        "load_strategy_operations",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("operation rows should not load when no realtime candidate")
+        ),
     )
     monkeypatch.setattr(refresher, "download_history", lambda symbol, period: latest_history)
 
@@ -121,8 +131,8 @@ def test_realtime_refresh_skips_history_download_without_operation_trigger(
     )
     monkeypatch.setattr(
         refresher.OperationManager,
-        "realtime_operation_triggered",
-        lambda self, ticker_id, price, configs=None: False,
+        "realtime_operation_candidates",
+        lambda self, ticker_id, price, configs=None, realtime_date=None: {},
     )
 
     def download_history(symbol, period):
@@ -136,11 +146,7 @@ def test_realtime_refresh_skips_history_download_without_operation_trigger(
 
     assert result == {"BTC-USD": 104.5}
     assert database.list_current_prices(db_path)[ticker_id]["price"] == 104.5
-    assert history.index[-1].date().isoformat() == "2026-06-07"
-    assert history["open"].iloc[-1] == 104.5
-    assert history["high"].iloc[-1] == 104.5
-    assert history["low"].iloc[-1] == 104.5
-    assert history["close"].iloc[-1] == 104.5
+    assert history.empty
     assert calls == []
 
 
@@ -213,7 +219,7 @@ def test_realtime_refresh_sends_telegram_for_new_operation_once(tmp_path, monkey
         },
         db_path,
     )
-    database.update_strategy_config("fake_strategy", True, {}, db_path)
+    database.update_strategy_config("turtle_breakout", True, {}, db_path)
 
     latest_history = pd.DataFrame(
         {
@@ -232,13 +238,14 @@ def test_realtime_refresh_sends_telegram_for_new_operation_once(tmp_path, monkey
         default_params = {}
 
         def operation_history(self, history, params):
+            signal_price = float(history.iloc[-1]["close"]) - 1.0
             return [
                 StrategyOperation(
                     trade_date=history.index[-1].date().isoformat(),
                     direction=LONG,
                     operation=ENTRY,
-                    price=108.0,
-                    signal_price=107.0,
+                    price=float(history.iloc[-1]["close"]),
+                    signal_price=signal_price,
                     detail="Realtime price triggered entry.",
                     metrics={},
                     signal_class=LONG,
@@ -246,9 +253,20 @@ def test_realtime_refresh_sends_telegram_for_new_operation_once(tmp_path, monkey
             ]
 
     sent = []
+    current_prices = [108.5, 108.9]
+    download_calls = []
 
-    monkeypatch.setattr(refresher, "STRATEGIES", {"fake_strategy": FakeStrategy()})
-    monkeypatch.setattr(refresher, "fetch_current_prices", lambda symbols: {"BTC-USD": 108.5})
+    monkeypatch.setattr(refresher, "STRATEGIES", {"turtle_breakout": FakeStrategy()})
+    monkeypatch.setattr(
+        refresher,
+        "current_realtime_data_date",
+        lambda asset_type: date(2026, 6, 7),
+    )
+    monkeypatch.setattr(
+        refresher,
+        "fetch_current_prices",
+        lambda symbols: {"BTC-USD": current_prices.pop(0)},
+    )
     monkeypatch.setattr(
         refresher,
         "fetch_current_price",
@@ -256,10 +274,17 @@ def test_realtime_refresh_sends_telegram_for_new_operation_once(tmp_path, monkey
     )
     monkeypatch.setattr(
         refresher.OperationManager,
-        "realtime_operation_triggered",
-        lambda self, ticker_id, price, configs=None: True,
+        "realtime_operation_candidates",
+        lambda self, ticker_id, price, configs=None, realtime_date=None: {
+            "turtle_breakout": [RealtimeOperationCandidate(LONG, ENTRY)]
+        },
     )
-    monkeypatch.setattr(refresher, "download_history", lambda symbol, period: latest_history)
+
+    def download_history(symbol, period):
+        download_calls.append((symbol, period))
+        return latest_history
+
+    monkeypatch.setattr(refresher, "download_history", download_history)
     monkeypatch.setattr(
         refresher,
         "send_operation_notification",
@@ -273,10 +298,72 @@ def test_realtime_refresh_sends_telegram_for_new_operation_once(tmp_path, monkey
     refresher.refresh_realtime_prices(db_path)
 
     assert sent == [("BTC", "Fake Strategy", "LONG ENTRY")]
+    assert download_calls == [("BTC-USD", "5d")]
     assert database.operation_notification_sent(
         ticker_id,
-        "fake_strategy",
-        "2026-06-07|long|entry|107.00000000",
+        "turtle_breakout",
+        "2026-06-07|long|entry",
+        db_path,
+    )
+
+
+def test_operation_notification_sent_matches_legacy_signal_price_keys(tmp_path):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    database.init_db(db_path)
+    ticker_id = database.add_ticker("INJ-USD", "INJ", "crypto", path=db_path)
+
+    database.mark_operation_notification_sent(
+        ticker_id,
+        "ema_crossover",
+        "2026-06-07|short|exit|5.21800000",
+        db_path,
+    )
+
+    assert database.operation_notification_sent(
+        ticker_id,
+        "ema_crossover",
+        "2026-06-07|short|exit",
+        db_path,
+    )
+
+
+def test_turtle_add_position_candidates_are_deduped_by_signal_price(tmp_path):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    database.init_db(db_path)
+    ticker_id = database.add_ticker("QQQ", "QQQ", "stock", path=db_path)
+    database.mark_operation_notification_sent(
+        ticker_id,
+        "turtle_breakout",
+        "2026-06-07|long|add_position|102.00000000",
+        db_path,
+    )
+
+    previous_keys = {
+        "turtle_breakout": {
+            "2026-06-07|long|add_position|102.00000000",
+        }
+    }
+
+    assert not refresher._has_unseen_realtime_candidate(
+        ticker_id,
+        {
+            "turtle_breakout": [
+                RealtimeOperationCandidate(LONG, ADD_POSITION, 102.0)
+            ]
+        },
+        date(2026, 6, 7),
+        previous_keys,
+        db_path,
+    )
+    assert refresher._has_unseen_realtime_candidate(
+        ticker_id,
+        {
+            "turtle_breakout": [
+                RealtimeOperationCandidate(LONG, ADD_POSITION, 103.0)
+            ]
+        },
+        date(2026, 6, 7),
+        previous_keys,
         db_path,
     )
 

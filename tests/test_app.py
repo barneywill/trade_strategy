@@ -141,6 +141,24 @@ def test_access_password_gate_requires_login_when_configured(tmp_path):
     assert "/login" in response.headers["Location"]
 
 
+def test_app_writes_startup_log_file(tmp_path):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    log_dir = tmp_path / "logs"
+
+    create_app(
+        {
+            "TESTING": True,
+            "DATABASE": db_path,
+            "AUTO_REFRESH_ENABLED": False,
+            "LOG_DIR": log_dir,
+        }
+    )
+
+    log_file = log_dir / "trade_strategy.log"
+    assert log_file.exists()
+    assert "Trade Strategy app starting" in log_file.read_text()
+
+
 def test_strategy_settings_renders_and_saves_common_realtime_parameters(tmp_path):
     db_path = tmp_path / "trade_strategy.sqlite3"
     app = create_app(
@@ -345,6 +363,16 @@ def test_dashboard_marks_strategy_with_operation_on_latest_candle(tmp_path):
         db_path,
     )
     database.update_strategy_config("turtle_breakout", False, {}, db_path)
+    OperationManager(db_path).operations_for(
+        ticker_id,
+        "ema_crossover",
+        STRATEGIES["ema_crossover"],
+        database.load_history(ticker_id, db_path),
+        {
+            "fast_window": 2,
+            "slow_window": 3,
+        },
+    )
 
     response = app.test_client().get("/")
 
@@ -381,7 +409,7 @@ def test_dashboard_uses_cached_ema_operations_without_recomputing_evaluate(
             "Adj Close": [14, 13, 12, 11, 10, 11, 13, 15],
             "Volume": [1000] * 8,
         },
-        index=pd.date_range("2026-06-01", periods=8),
+        index=pd.date_range("2026-05-18", periods=8),
     )
     database.save_history(ticker_id, history, db_path)
     params = {"fast_window": 2, "slow_window": 4}
@@ -406,6 +434,49 @@ def test_dashboard_uses_cached_ema_operations_without_recomputing_evaluate(
     assert response.status_code == 200
     assert b"EMA Crossover" in response.data
     assert b"HOLD" in response.data
+
+
+def test_dashboard_uses_cached_summaries_without_loading_full_history(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": db_path,
+            "AUTO_REFRESH_ENABLED": False,
+        }
+    )
+    ticker_id = database.add_ticker("SPY", "SPY", "stock", path=db_path)
+    history = pd.DataFrame(
+        {
+            "Open": [10, 11],
+            "High": [10, 11],
+            "Low": [10, 11],
+            "Close": [10, 11],
+            "Adj Close": [10, 11],
+            "Volume": [1000, 1000],
+        },
+        index=pd.to_datetime(["2026-05-28", "2026-05-29"]),
+    )
+    database.save_history(ticker_id, history, db_path)
+    database.update_strategy_config("ema_crossover", False, {}, db_path)
+    database.update_strategy_config("macd_trend_following", False, {}, db_path)
+    database.update_strategy_config("turtle_breakout", False, {}, db_path)
+
+    monkeypatch.setattr(
+        database,
+        "load_history",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("dashboard should not load full history")
+        ),
+    )
+
+    response = app.test_client().get("/")
+
+    assert response.status_code == 200
+    assert b"SPY" in response.data
 
 
 def test_operations_page_renders_open_cycle_chart_dots(tmp_path):

@@ -17,8 +17,9 @@ and yearly backtests.
 - Configure the daily history fetch time from the Strategies page. The default
   is `00:01` UTC.
 - Optionally enable realtime price updates with configurable polling frequency.
-- Batch-fetch realtime prices where supported, then update each ticker's current
-  price and provisional current-day candle.
+- Batch-fetch realtime prices where supported, update each ticker's current
+  price, and only write a provisional current-day candle when a realtime Turtle
+  trigger needs operation recalculation.
 - Use in-memory realtime trigger snapshots to avoid slow 5-day daily-history
   fetches unless a strategy operation is likely to be triggered.
 - Respect US stock market trading days and regular US market hours for stock
@@ -171,6 +172,22 @@ Disable automatic startup/daily/realtime background refreshers:
 TRADE_STRATEGY_AUTO_REFRESH=0 flask --app trade_strategy.app run
 ```
 
+The app writes important events to:
+
+```text
+/tmp/trade_strategy/trade_strategy.log
+```
+
+The log file is rotated automatically when it grows. It records startup,
+scheduled refresh results, realtime Turtle trigger candidates, realtime history
+refreshes, notification sends, and refresh/notification errors.
+
+Use a different log directory:
+
+```bash
+TRADE_STRATEGY_LOG_DIR=/path/to/logs flask --app trade_strategy.app run
+```
+
 Require a password before showing the web pages:
 
 ```bash
@@ -199,20 +216,24 @@ metadata. For a real deployment, prefer setting the password at run time:
 Run with persistent SQLite data:
 
 ```bash
+mkdir -p /tmp/trade_strategy
 docker run -d \
   --name trade-strategy-app \
   -p 5001:5001 \
   -v "$PWD/data:/app/data" \
+  -v /tmp/trade_strategy:/tmp/trade_strategy \
   trade-strategy:latest
 ```
 
 Run with an access password:
 
 ```bash
+mkdir -p /tmp/trade_strategy
 docker run -d \
   --name trade-strategy-app \
   -p 5001:5001 \
   -v "$PWD/data:/app/data" \
+  -v /tmp/trade_strategy:/tmp/trade_strategy \
   -e TRADE_STRATEGY_ACCESS_PASSWORD='your-password' \
   trade-strategy:latest
 ```
@@ -229,10 +250,12 @@ Replace a running container after rebuilding:
 
 ```bash
 docker rm -f trade-strategy-app
+mkdir -p /tmp/trade_strategy
 docker run -d \
   --name trade-strategy-app \
   -p 5001:5001 \
   -v "$PWD/data:/app/data" \
+  -v /tmp/trade_strategy:/tmp/trade_strategy \
   trade-strategy:latest
 ```
 
@@ -240,6 +263,7 @@ View logs:
 
 ```bash
 docker logs --tail 120 trade-strategy-app
+tail -f /tmp/trade_strategy/trade_strategy.log
 ```
 
 ## Telegram Notifications
@@ -271,8 +295,11 @@ PYTHONPATH=src python -m compileall src tests
 
 - Market data is downloaded with `yfinance`.
 - Current prices are stored separately from daily history.
-- Realtime prices create/update a provisional current-day candle so strategy
-  snapshots can react before the daily authoritative fetch runs.
+- Realtime price ticks first update the current-price cache and evaluate the
+  lightweight Turtle trigger snapshot.
+- A provisional current-day candle is only written after an unseen realtime
+  Turtle candidate passes the quick gate and the app starts operation
+  recalculation.
 - The scheduled daily fetch reconciles saved candles with provider data.
 - US stock realtime updates are skipped outside the regular US market session.
 
