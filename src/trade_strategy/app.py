@@ -89,6 +89,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         return {
             "access_password_enabled": access_password_enabled(app),
             "access_granted": bool(session.get("access_granted")),
+            "page_style": page_style(database.list_strategy_configs(db_path)),
         }
 
     @app.before_request
@@ -759,6 +760,13 @@ def parse_default_group_symbols(default_symbols_text: str) -> list[str]:
         symbols.append(symbol)
         seen.add(symbol)
     return symbols
+
+
+def page_style(configs: dict[str, dict[str, Any]]) -> str:
+    style = str(common_params(configs).get("page_style", "light")).lower()
+    if style not in {"light", "dark"}:
+        return "light"
+    return style
 
 
 def read_strategy_params(strategy: TradeStrategy, form) -> dict[str, Any]:

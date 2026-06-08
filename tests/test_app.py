@@ -173,6 +173,8 @@ def test_strategy_settings_renders_and_saves_common_realtime_parameters(tmp_path
     response = client.get("/strategies")
     assert response.status_code == 200
     assert b"Common" in response.data
+    assert b"common.page_style" in response.data
+    assert b"value=\"light\"" in response.data
     assert b"common.default_group_symbols" in response.data
     assert b"value=\"BTC, ETH, SOL, QQQ, SPY\"" in response.data
     assert b"common.enable_realtime_updates" in response.data
@@ -187,6 +189,7 @@ def test_strategy_settings_renders_and_saves_common_realtime_parameters(tmp_path
     response = client.post(
         "/strategies",
         data={
+            "common.page_style": "dark",
             "common.default_group_symbols": "QQQ, SPY, BTC",
             "common.enable_realtime_updates": "on",
             "common.realtime_update_frequency": "120",
@@ -210,6 +213,7 @@ def test_strategy_settings_renders_and_saves_common_realtime_parameters(tmp_path
 
     assert response.status_code == 302
     config = database.list_strategy_configs(db_path)[COMMON_CONFIG_NAME]
+    assert config["params"]["page_style"] == "dark"
     assert config["params"]["default_group_symbols"] == "QQQ, SPY, BTC"
     assert config["params"]["enable_realtime_updates"] is True
     assert config["params"]["realtime_update_frequency"] == 120
@@ -218,6 +222,9 @@ def test_strategy_settings_renders_and_saves_common_realtime_parameters(tmp_path
     assert config["params"]["telegram_bot_token"] == "123:abc"
 
     response = client.get("/strategies")
+    assert b'data-page-style="dark"' in response.data
+    assert b'value="dark"' in response.data
+    assert b"selected" in response.data
     assert b"placeholder=\"******\"" in response.data
     assert b"value=\"123:abc\"" not in response.data
     assert config["params"]["telegram_chat_id"] == "456"
@@ -225,6 +232,7 @@ def test_strategy_settings_renders_and_saves_common_realtime_parameters(tmp_path
     response = client.post(
         "/strategies",
         data={
+            "common.page_style": "dark",
             "common.default_group_symbols": "QQQ, SPY, BTC",
             "common.enable_realtime_updates": "on",
             "common.realtime_update_frequency": "120",

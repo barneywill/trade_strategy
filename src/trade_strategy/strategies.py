@@ -27,6 +27,7 @@ class ParameterSpec:
     kind: str = "number"
     minimum: int | float | None = None
     maximum: int | float | None = None
+    options: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -665,7 +666,7 @@ class TurtleBreakoutStrategy(TradeStrategy):
         if levels is None:
             return []
 
-        max_units = int(params.get("max_units", 4))
+        max_units = max(1, int(params.get("max_units", 4)))
         exit_atr_ratio = float(params.get("exit_atr_ratio", 2.0))
         use_ma_filter = bool(params.get("use_ma_filter", False))
         operations: list[StrategyOperation] = []
@@ -684,7 +685,7 @@ class TurtleBreakoutStrategy(TradeStrategy):
 
             close = float(row["close"])
             metrics = _turtle_metrics(close, row_levels, use_ma_filter)
-            operation: StrategyOperation | None = None
+            day_operations: list[StrategyOperation] = []
 
             if direction is None:
                 if close > float(row_levels["entry_high"]) and _passes_ma_filter(
@@ -692,61 +693,97 @@ class TurtleBreakoutStrategy(TradeStrategy):
                 ):
                     entry_atr = float(row_levels["atr"])
                     entry_price = float(row_levels["entry_high"])
-                    operation = _make_operation(
-                        trade_date,
-                        LONG,
-                        ENTRY,
-                        close,
-                        entry_price,
-                        "Close broke above the long entry channel.",
-                        _with_turtle_operation_metrics(
-                            metrics,
-                            entry_atr,
-                            _turtle_stop_loss_price(
-                                entry_price,
-                                entry_atr,
-                                LONG,
-                                exit_atr_ratio,
-                            ),
-                            float(row_levels["exit_low"]),
-                            None,
-                            exit_atr_ratio,
+                    day_operations.append(
+                        _make_operation(
+                            trade_date,
+                            LONG,
+                            ENTRY,
+                            close,
                             entry_price,
-                        ),
+                            "Close broke above the long entry channel.",
+                            _with_turtle_operation_metrics(
+                                metrics,
+                                entry_atr,
+                                _turtle_stop_loss_price(
+                                    entry_price,
+                                    entry_atr,
+                                    LONG,
+                                    exit_atr_ratio,
+                                ),
+                                float(row_levels["exit_low"]),
+                                None,
+                                exit_atr_ratio,
+                                entry_price,
+                            ),
+                        )
                     )
                     direction = LONG
                     units = 1
                     last_unit_signal_price = entry_price
+                    add_operations, units, last_unit_signal_price = (
+                        _turtle_add_operations_for_close(
+                            trade_date,
+                            LONG,
+                            close,
+                            row_levels,
+                            metrics,
+                            entry_atr,
+                            last_unit_signal_price,
+                            units,
+                            max_units,
+                            exit_atr_ratio,
+                            use_ma_filter,
+                        )
+                    )
+                    day_operations.extend(add_operations)
                 elif close < float(row_levels["entry_low"]) and _passes_ma_filter(
                     close, row_levels, SHORT, use_ma_filter
                 ):
                     entry_atr = float(row_levels["atr"])
                     entry_price = float(row_levels["entry_low"])
-                    operation = _make_operation(
-                        trade_date,
-                        SHORT,
-                        ENTRY,
-                        close,
-                        entry_price,
-                        "Close broke below the short entry channel.",
-                        _with_turtle_operation_metrics(
-                            metrics,
-                            entry_atr,
-                            _turtle_stop_loss_price(
-                                entry_price,
-                                entry_atr,
-                                SHORT,
-                                exit_atr_ratio,
-                            ),
-                            float(row_levels["exit_high"]),
-                            None,
-                            exit_atr_ratio,
+                    day_operations.append(
+                        _make_operation(
+                            trade_date,
+                            SHORT,
+                            ENTRY,
+                            close,
                             entry_price,
-                        ),
+                            "Close broke below the short entry channel.",
+                            _with_turtle_operation_metrics(
+                                metrics,
+                                entry_atr,
+                                _turtle_stop_loss_price(
+                                    entry_price,
+                                    entry_atr,
+                                    SHORT,
+                                    exit_atr_ratio,
+                                ),
+                                float(row_levels["exit_high"]),
+                                None,
+                                exit_atr_ratio,
+                                entry_price,
+                            ),
+                        )
                     )
                     direction = SHORT
                     units = 1
                     last_unit_signal_price = entry_price
+                    add_operations, units, last_unit_signal_price = (
+                        _turtle_add_operations_for_close(
+                            trade_date,
+                            SHORT,
+                            close,
+                            row_levels,
+                            metrics,
+                            entry_atr,
+                            last_unit_signal_price,
+                            units,
+                            max_units,
+                            exit_atr_ratio,
+                            use_ma_filter,
+                        )
+                    )
+                    day_operations.extend(add_operations)
             elif direction == LONG:
                 exit_levels = _turtle_exit_levels(
                     row_levels,
@@ -756,63 +793,46 @@ class TurtleBreakoutStrategy(TradeStrategy):
                     exit_atr_ratio,
                 )
                 if exit_levels is not None and close <= exit_levels["price"]:
-                    operation = _make_operation(
-                        trade_date,
-                        LONG,
-                        EXIT,
-                        close,
-                        exit_levels["price"],
-                        _exit_detail(LONG, exit_levels["kind"], exit_atr_ratio),
-                        _with_turtle_operation_metrics(
-                            metrics,
-                            entry_atr,
-                            exit_levels["stop_loss_price"],
-                            exit_levels["normal_exit_price"],
+                    day_operations.append(
+                        _make_operation(
+                            trade_date,
+                            LONG,
+                            EXIT,
+                            close,
                             exit_levels["price"],
-                            exit_atr_ratio,
-                            exit_levels["anchor_price"],
-                        ),
+                            _exit_detail(LONG, exit_levels["kind"], exit_atr_ratio),
+                            _with_turtle_operation_metrics(
+                                metrics,
+                                entry_atr,
+                                exit_levels["stop_loss_price"],
+                                exit_levels["normal_exit_price"],
+                                exit_levels["price"],
+                                exit_atr_ratio,
+                                exit_levels["anchor_price"],
+                            ),
+                        )
                     )
                     direction = None
                     units = 0
                     last_unit_signal_price = None
                     entry_atr = None
                 else:
-                    add_price = _next_add_price(
-                        last_unit_signal_price,
-                        entry_atr,
-                        LONG,
-                    )
-                    if (
-                        add_price is not None
-                        and close > add_price
-                        and units < max_units
-                        and _passes_ma_filter(close, row_levels, LONG, use_ma_filter)
-                    ):
-                        units += 1
-                        operation = _make_operation(
+                    add_operations, units, last_unit_signal_price = (
+                        _turtle_add_operations_for_close(
                             trade_date,
                             LONG,
-                            ADD_POSITION,
                             close,
-                            add_price,
-                            "Long breakout continued by 0.5 ATR; adding one Turtle unit.",
-                            _with_turtle_operation_metrics(
-                                metrics,
-                                entry_atr,
-                                _turtle_stop_loss_price(
-                                    add_price,
-                                    entry_atr,
-                                    LONG,
-                                    exit_atr_ratio,
-                                ),
-                                float(row_levels["exit_low"]),
-                                None,
-                                exit_atr_ratio,
-                                add_price,
-                            ),
+                            row_levels,
+                            metrics,
+                            entry_atr,
+                            last_unit_signal_price,
+                            units,
+                            max_units,
+                            exit_atr_ratio,
+                            use_ma_filter,
                         )
-                        last_unit_signal_price = add_price
+                    )
+                    day_operations.extend(add_operations)
             elif direction == SHORT:
                 exit_levels = _turtle_exit_levels(
                     row_levels,
@@ -822,66 +842,48 @@ class TurtleBreakoutStrategy(TradeStrategy):
                     exit_atr_ratio,
                 )
                 if exit_levels is not None and close >= exit_levels["price"]:
-                    operation = _make_operation(
-                        trade_date,
-                        SHORT,
-                        EXIT,
-                        close,
-                        exit_levels["price"],
-                        _exit_detail(SHORT, exit_levels["kind"], exit_atr_ratio),
-                        _with_turtle_operation_metrics(
-                            metrics,
-                            entry_atr,
-                            exit_levels["stop_loss_price"],
-                            exit_levels["normal_exit_price"],
+                    day_operations.append(
+                        _make_operation(
+                            trade_date,
+                            SHORT,
+                            EXIT,
+                            close,
                             exit_levels["price"],
-                            exit_atr_ratio,
-                            exit_levels["anchor_price"],
-                        ),
+                            _exit_detail(SHORT, exit_levels["kind"], exit_atr_ratio),
+                            _with_turtle_operation_metrics(
+                                metrics,
+                                entry_atr,
+                                exit_levels["stop_loss_price"],
+                                exit_levels["normal_exit_price"],
+                                exit_levels["price"],
+                                exit_atr_ratio,
+                                exit_levels["anchor_price"],
+                            ),
+                        )
                     )
                     direction = None
                     units = 0
                     last_unit_signal_price = None
                     entry_atr = None
                 else:
-                    add_price = _next_add_price(
-                        last_unit_signal_price,
-                        entry_atr,
-                        SHORT,
-                    )
-                    if (
-                        add_price is not None
-                        and close < add_price
-                        and units < max_units
-                        and _passes_ma_filter(close, row_levels, SHORT, use_ma_filter)
-                    ):
-                        units += 1
-                        operation = _make_operation(
+                    add_operations, units, last_unit_signal_price = (
+                        _turtle_add_operations_for_close(
                             trade_date,
                             SHORT,
-                            ADD_POSITION,
                             close,
-                            add_price,
-                            "Short breakout continued by 0.5 ATR; adding one Turtle unit.",
-                            _with_turtle_operation_metrics(
-                                metrics,
-                                entry_atr,
-                                _turtle_stop_loss_price(
-                                    add_price,
-                                    entry_atr,
-                                    SHORT,
-                                    exit_atr_ratio,
-                                ),
-                                float(row_levels["exit_high"]),
-                                None,
-                                exit_atr_ratio,
-                                add_price,
-                            ),
+                            row_levels,
+                            metrics,
+                            entry_atr,
+                            last_unit_signal_price,
+                            units,
+                            max_units,
+                            exit_atr_ratio,
+                            use_ma_filter,
                         )
-                        last_unit_signal_price = add_price
+                    )
+                    day_operations.extend(add_operations)
 
-            if operation is not None:
-                operations.append(operation)
+            operations.extend(day_operations)
 
         return _apply_position_sizing(operations, self.position_unit_count(params))
 
@@ -1143,6 +1145,72 @@ def _passes_ma_filter(
     if direction == LONG:
         return close > float(moving_average)
     return close < float(moving_average)
+
+
+def _turtle_add_operations_for_close(
+    trade_date,
+    direction: TradeDirection,
+    close: float,
+    row_levels: pd.Series,
+    metrics: dict[str, float | str],
+    entry_atr: float | None,
+    last_unit_signal_price: float | None,
+    units: int,
+    max_units: int,
+    exit_atr_ratio: float,
+    use_ma_filter: bool,
+) -> tuple[list[StrategyOperation], int, float | None]:
+    operations: list[StrategyOperation] = []
+    if not _passes_ma_filter(close, row_levels, direction, use_ma_filter):
+        return operations, units, last_unit_signal_price
+
+    while units < max_units:
+        add_price = _next_add_price(
+            last_unit_signal_price,
+            entry_atr,
+            direction,
+        )
+        if add_price is None:
+            break
+        if direction == LONG:
+            if close <= add_price:
+                break
+            normal_exit_price = float(row_levels["exit_low"])
+            detail = "Long breakout continued by 0.5 ATR; adding one Turtle unit."
+        else:
+            if close >= add_price:
+                break
+            normal_exit_price = float(row_levels["exit_high"])
+            detail = "Short breakout continued by 0.5 ATR; adding one Turtle unit."
+
+        operations.append(
+            _make_operation(
+                trade_date,
+                direction,
+                ADD_POSITION,
+                close,
+                add_price,
+                detail,
+                _with_turtle_operation_metrics(
+                    metrics,
+                    entry_atr,
+                    _turtle_stop_loss_price(
+                        add_price,
+                        entry_atr,
+                        direction,
+                        exit_atr_ratio,
+                    ),
+                    normal_exit_price,
+                    None,
+                    exit_atr_ratio,
+                    add_price,
+                ),
+            )
+        )
+        units += 1
+        last_unit_signal_price = add_price
+
+    return operations, units, last_unit_signal_price
 
 
 def _next_add_price(

@@ -178,6 +178,56 @@ def test_save_history_reports_only_changed_rows(tmp_path):
     )
 
 
+def test_force_refresh_rebuilds_operations_when_history_is_unchanged(
+    tmp_path,
+    monkeypatch,
+):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    database.init_db(db_path)
+    ticker_id = database.add_ticker("GLDM", "GLDM", "stock", path=db_path)
+    history = pd.DataFrame(
+        {
+            "Open": [10, 11],
+            "High": [10, 11],
+            "Low": [9, 10],
+            "Close": [10, 11],
+            "Adj Close": [10, 11],
+            "Volume": [1000, 1000],
+        },
+        index=pd.to_datetime(["2026-06-05", "2026-06-08"]),
+    )
+    database.save_history(ticker_id, history, db_path)
+    calls = []
+
+    monkeypatch.setattr(refresher, "download_history", lambda *args, **kwargs: history)
+    monkeypatch.setattr(
+        refresher,
+        "latest_completed_data_date",
+        lambda asset_type: date(2026, 6, 8),
+    )
+
+    def refresh_ticker(self, ticker_id, configs=None, asset_type=None, force=False):
+        calls.append((ticker_id, asset_type, force))
+
+    monkeypatch.setattr(refresher.OperationManager, "refresh_ticker", refresh_ticker)
+
+    saved_rows = refresher.refresh_ticker_if_needed(
+        {
+            "id": ticker_id,
+            "symbol": "GLDM",
+            "asset_type": "stock",
+            "last_trade_date": "2026-06-08",
+        },
+        db_path,
+        "2y",
+        force=True,
+        start="2000-01-01",
+    )
+
+    assert saved_rows == 0
+    assert calls == [(ticker_id, "stock", True)]
+
+
 def test_realtime_refresh_skips_stock_candles_when_market_is_closed(
     tmp_path, monkeypatch
 ):

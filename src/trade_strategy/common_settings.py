@@ -6,6 +6,13 @@ from .strategies import ParameterSpec
 COMMON_CONFIG_NAME = "__common__"
 COMMON_PARAMETER_SPECS = (
     ParameterSpec(
+        "page_style",
+        "Page style",
+        "light",
+        kind="select",
+        options=("light", "dark"),
+    ),
+    ParameterSpec(
         "default_group_symbols",
         "Default group tickers",
         "BTC, ETH, SOL, QQQ, SPY",

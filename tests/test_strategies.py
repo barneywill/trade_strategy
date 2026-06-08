@@ -189,9 +189,9 @@ def test_turtle_strategy_can_add_to_long_breakout_position():
         {"entry_window": 3, "exit_window": 2, "max_units": 4},
     )
 
-    assert result.signal == "LONG ADD"
+    assert result.signal == "LONG HOLD"
     assert result.direction == "long"
-    assert result.operation == "add_position"
+    assert result.operation is None
     assert result.metrics["atr"] > 0
     assert "close" not in result.metrics
 
@@ -204,16 +204,33 @@ def test_turtle_strategy_can_add_to_long_breakout_position():
         ("long", "entry"),
         ("long", "add_position"),
         ("long", "add_position"),
+        ("long", "add_position"),
     ]
     assert operations[-1].operation_label == "ADD"
-    assert [operation.position_size for operation in operations] == [100.0, 100.0, 100.0]
+    assert [operation.position_size for operation in operations] == [
+        100.0,
+        100.0,
+        100.0,
+        100.0,
+    ]
     assert [operation.position_notional for operation in operations] == [
         1200.0,
         1250.0,
         1300.0,
+        1350.0,
     ]
-    assert [operation.signal_price for operation in operations] == [12.0, 12.5, 13.0]
-    assert [operation.metrics["atr"] for operation in operations] == [1.0, 1.0, 1.0]
+    assert [operation.signal_price for operation in operations] == [
+        12.0,
+        12.5,
+        13.0,
+        13.5,
+    ]
+    assert [operation.metrics["atr"] for operation in operations] == [
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+    ]
     assert abs(
         (operations[1].signal_price - operations[0].signal_price)
         - operations[0].metrics["atr"] * 0.5
@@ -222,6 +239,44 @@ def test_turtle_strategy_can_add_to_long_breakout_position():
         (operations[2].signal_price - operations[1].signal_price)
         - operations[0].metrics["atr"] * 0.5
     ) < 0.0001
+    assert abs(
+        (operations[3].signal_price - operations[2].signal_price)
+        - operations[0].metrics["atr"] * 0.5
+    ) < 0.0001
+
+
+def test_turtle_strategy_can_enter_and_add_multiple_units_on_same_day():
+    history = pd.DataFrame(
+        {
+            "close": [10, 10, 10, 10, 14],
+            "high": [10, 10, 10, 10, 10],
+            "low": [9, 9, 9, 9, 9],
+        },
+        index=pd.date_range("2024-01-01", periods=5),
+    )
+
+    operations = TurtleBreakoutStrategy().operation_history(
+        history,
+        {
+            "entry_window": 3,
+            "exit_window": 2,
+            "atr_window": 1,
+            "max_units": 4,
+        },
+    )
+
+    assert [(operation.trade_date, operation.operation) for operation in operations] == [
+        ("2024-01-05", "entry"),
+        ("2024-01-05", "add_position"),
+        ("2024-01-05", "add_position"),
+        ("2024-01-05", "add_position"),
+    ]
+    assert [operation.signal_price for operation in operations] == [
+        10.0,
+        10.5,
+        11.0,
+        11.5,
+    ]
 
 
 def test_turtle_position_size_is_capped_by_maximum_unit_allocation():
@@ -247,12 +302,26 @@ def test_turtle_position_size_is_capped_by_maximum_unit_allocation():
     assert [(operation.direction, operation.operation) for operation in operations] == [
         ("long", "entry"),
         ("long", "add_position"),
+        ("long", "add_position"),
+        ("long", "add_position"),
     ]
-    assert [operation.metrics["atr"] for operation in operations] == [0.05, 0.05]
-    assert [operation.position_notional for operation in operations] == [2500.0, 2500.0]
+    assert [operation.metrics["atr"] for operation in operations] == [
+        0.05,
+        0.05,
+        0.05,
+        0.05,
+    ]
+    assert [operation.position_notional for operation in operations] == [
+        2500.0,
+        2500.0,
+        2500.0,
+        2500.0,
+    ]
     assert [operation.position_size for operation in operations] == [
         248.75621891,
         248.13895782,
+        247.52475248,
+        246.91358025,
     ]
 
 
@@ -280,6 +349,7 @@ def test_turtle_strategy_uses_normal_channel_for_full_position_exit():
         ("long", "entry"),
         ("long", "add_position"),
         ("long", "add_position"),
+        ("long", "add_position"),
         ("long", "exit"),
     ]
     assert "cut_position" not in {operation.operation for operation in operations}
@@ -288,13 +358,13 @@ def test_turtle_strategy_uses_normal_channel_for_full_position_exit():
     assert operations[-1].price == 11.0
     assert operations[-1].signal_price == 13.0
     assert operations[-1].metrics["exit_atr_ratio"] == 1.5
-    assert operations[-1].metrics["exit_anchor"] == 13.0
-    assert operations[-1].metrics["stop_loss"] == 11.5
+    assert operations[-1].metrics["exit_anchor"] == 13.5
+    assert operations[-1].metrics["stop_loss"] == 12.0
     assert operations[-1].metrics["normal_exit"] == 13.0
     assert operations[-1].metrics["exit_price"] == 13.0
-    assert operations[-1].position_size == 300.0
-    assert operations[-1].realized_pnl == 150.0
-    assert operations[-1].balance_after == 10150.0
+    assert operations[-1].position_size == 400.0
+    assert operations[-1].realized_pnl == 100.0
+    assert operations[-1].balance_after == 10100.0
 
 
 def test_turtle_strategy_uses_last_signal_atr_stop_loss_when_closer_than_channel():
@@ -320,17 +390,18 @@ def test_turtle_strategy_uses_last_signal_atr_stop_loss_when_closer_than_channel
 
     assert [(operation.direction, operation.operation) for operation in operations] == [
         ("long", "entry"),
+        ("long", "add_position"),
         ("long", "exit"),
     ]
     assert operations[-1].operation_label == "STOP"
     assert operations[-1].label == "LONG STOP"
-    assert operations[-1].signal_price == 10.5
-    assert operations[-1].metrics["exit_anchor"] == 12.0
-    assert operations[-1].metrics["stop_loss"] == 10.5
+    assert operations[-1].signal_price == 11.0
+    assert operations[-1].metrics["exit_anchor"] == 12.5
+    assert operations[-1].metrics["stop_loss"] == 11.0
     assert operations[-1].metrics["normal_exit"] == 9.0
-    assert operations[-1].metrics["exit_price"] == 10.5
-    assert operations[-1].realized_pnl == -150.0
-    assert operations[-1].balance_after == 9850.0
+    assert operations[-1].metrics["exit_price"] == 11.0
+    assert operations[-1].realized_pnl == -250.0
+    assert operations[-1].balance_after == 9750.0
 
 
 def test_turtle_moving_average_filter_blocks_counter_trend_long_entry():

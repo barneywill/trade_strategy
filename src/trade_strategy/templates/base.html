@@ -6,7 +6,7 @@
     <title>{% block title %}Trade Strategy{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
   </head>
-  <body>
+  <body data-page-style="{{ page_style }}">
     <header class="app-header">
       <div>
         <a class="brand" href="{{ url_for('dashboard') }}">Trade Strategy</a>

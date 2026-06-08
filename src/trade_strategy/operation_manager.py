@@ -58,6 +58,7 @@ class OperationManager:
         strategy: TradeStrategy,
         history: pd.DataFrame,
         params: dict[str, Any],
+        force: bool = False,
     ) -> list[StrategyOperation]:
         cache_key = operation_cache_key(strategy_name, params, history)
         saved_cache_key = database.get_operation_cache_key(
@@ -65,7 +66,7 @@ class OperationManager:
             strategy_name,
             self.db_path,
         )
-        if saved_cache_key == cache_key:
+        if not force and saved_cache_key == cache_key:
             return self._load_operations(ticker_id, strategy_name)
 
         operations = strategy.operation_history(history, params)
@@ -83,6 +84,7 @@ class OperationManager:
         ticker_id: int,
         configs: dict[str, dict[str, Any]] | None = None,
         asset_type: str | None = None,
+        force: bool = False,
     ) -> None:
         configs = configs or database.list_strategy_configs(self.db_path)
         history = database.load_history(ticker_id, self.db_path)
@@ -97,14 +99,19 @@ class OperationManager:
                     strategy,
                     _completed_strategy_history(history, strategy_name, asset_type),
                     config["params"],
+                    force,
                 )
                 if strategy_name == "turtle_breakout":
                     self.invalidate_realtime_trigger_state(ticker_id, strategy_name)
 
-    def refresh_all(self, configs: dict[str, dict[str, Any]] | None = None) -> None:
+    def refresh_all(
+        self,
+        configs: dict[str, dict[str, Any]] | None = None,
+        force: bool = False,
+    ) -> None:
         configs = configs or database.list_strategy_configs(self.db_path)
         for ticker in database.list_tickers(self.db_path):
-            self.refresh_ticker(int(ticker["id"]), configs, ticker["asset_type"])
+            self.refresh_ticker(int(ticker["id"]), configs, ticker["asset_type"], force)
 
     def realtime_operation_triggered(
         self,
@@ -331,59 +338,84 @@ class _TurtleRealtimeTriggerState(_RealtimeTriggerState):
     ) -> list[RealtimeOperationCandidate]:
         if self.direction is None:
             if current_price > self.entry_high:
-                return (
-                    [RealtimeOperationCandidate(LONG, ENTRY)]
-                    if self._passes_filter(current_price, LONG)
-                    else []
-                )
+                if not self._passes_filter(current_price, LONG):
+                    return []
+                return [
+                    RealtimeOperationCandidate(LONG, ENTRY),
+                    *self._add_candidates(
+                        current_price,
+                        LONG,
+                        1,
+                        self.entry_high,
+                    ),
+                ]
             if current_price < self.entry_low:
-                return (
-                    [RealtimeOperationCandidate(SHORT, ENTRY)]
-                    if self._passes_filter(current_price, SHORT)
-                    else []
-                )
+                if not self._passes_filter(current_price, SHORT):
+                    return []
+                return [
+                    RealtimeOperationCandidate(SHORT, ENTRY),
+                    *self._add_candidates(
+                        current_price,
+                        SHORT,
+                        1,
+                        self.entry_low,
+                    ),
+                ]
             return []
 
         exit_price = self._exit_price()
         if self.direction == LONG:
             if exit_price is not None and current_price <= exit_price:
                 return [RealtimeOperationCandidate(LONG, EXIT)]
-            add_price = _next_add_price(
-                self.last_unit_signal_price,
-                self.entry_atr,
+            return self._add_candidates(
+                current_price,
                 LONG,
-            )
-            should_add = (
-                add_price is not None
-                and current_price > add_price
-                and self.units < self.max_units
-                and self._passes_filter(current_price, LONG)
-            )
-            return (
-                [RealtimeOperationCandidate(LONG, ADD_POSITION, add_price)]
-                if should_add
-                else []
+                self.units,
+                self.last_unit_signal_price,
             )
 
         exit_price = self._exit_price()
         if exit_price is not None and current_price >= exit_price:
             return [RealtimeOperationCandidate(SHORT, EXIT)]
-        add_price = _next_add_price(
-            self.last_unit_signal_price,
-            self.entry_atr,
+        return self._add_candidates(
+            current_price,
             SHORT,
+            self.units,
+            self.last_unit_signal_price,
         )
-        should_add = (
-            add_price is not None
-            and current_price < add_price
-            and self.units < self.max_units
-            and self._passes_filter(current_price, SHORT)
-        )
-        return (
-            [RealtimeOperationCandidate(SHORT, ADD_POSITION, add_price)]
-            if should_add
-            else []
-        )
+
+    def _add_candidates(
+        self,
+        current_price: float,
+        direction: str,
+        units: int,
+        last_unit_signal_price: float | None,
+    ) -> list[RealtimeOperationCandidate]:
+        candidates: list[RealtimeOperationCandidate] = []
+        if not self._passes_filter(current_price, direction):
+            return candidates
+
+        while units < self.max_units:
+            add_price = _next_add_price(
+                last_unit_signal_price,
+                self.entry_atr,
+                direction,
+            )
+            if add_price is None:
+                break
+            if direction == LONG:
+                if current_price <= add_price:
+                    break
+            elif current_price >= add_price:
+                break
+
+            candidates.append(
+                RealtimeOperationCandidate(direction, ADD_POSITION, add_price)
+            )
+            units += 1
+            last_unit_signal_price = add_price
+
+        return candidates
 
     def _passes_filter(self, current_price: float, direction: str) -> bool:
         if not self.use_ma_filter:
@@ -446,6 +478,7 @@ def _build_turtle_realtime_trigger_state(
     direction, units, last_unit_signal_price, entry_atr = _open_turtle_state(operations)
     use_ma_filter = bool(params.get("use_ma_filter", False))
     moving_average = latest_levels["moving_average"]
+    latest_atr = float(latest_levels["atr"])
     return _TurtleRealtimeTriggerState(
         cache_key=cache_key,
         direction=direction,
@@ -458,7 +491,7 @@ def _build_turtle_realtime_trigger_state(
         moving_average=None if pd.isna(moving_average) else float(moving_average),
         use_ma_filter=use_ma_filter,
         last_unit_signal_price=last_unit_signal_price,
-        entry_atr=entry_atr,
+        entry_atr=entry_atr if entry_atr is not None else latest_atr,
         exit_atr_ratio=float(params.get("exit_atr_ratio", 2.0)),
     )
 

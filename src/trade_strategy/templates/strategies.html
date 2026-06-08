@@ -32,6 +32,20 @@
                 >
                 {{ parameter.label }}
               </label>
+            {% elif parameter.kind == "select" %}
+              <label>
+                {{ parameter.label }}
+                <select name="common.{{ parameter.name }}">
+                  {% for option in parameter.options %}
+                    <option
+                      value="{{ option }}"
+                      {% if common_params.get(parameter.name, parameter.default) == option %}selected{% endif %}
+                    >
+                      {{ option|capitalize }}
+                    </option>
+                  {% endfor %}
+                </select>
+              </label>
             {% else %}
               <label>
                 {{ parameter.label }}
@@ -79,6 +93,20 @@
                     {% if config.params.get(parameter.name, parameter.default) %}checked{% endif %}
                   >
                   {{ parameter.label }}
+                </label>
+              {% elif parameter.kind == "select" %}
+                <label>
+                  {{ parameter.label }}
+                  <select name="{{ strategy_name }}.{{ parameter.name }}">
+                    {% for option in parameter.options %}
+                      <option
+                        value="{{ option }}"
+                        {% if config.params.get(parameter.name, parameter.default) == option %}selected{% endif %}
+                      >
+                        {{ option|capitalize }}
+                      </option>
+                    {% endfor %}
+                  </select>
                 </label>
               {% else %}
                 <label>

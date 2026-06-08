@@ -125,10 +125,11 @@ def refresh_ticker_if_needed(
     history = download_history(ticker["symbol"], period, start=start)
     history = _keep_completed_rows(history, expected_date)
     saved_rows = database.save_history(ticker["id"], history, db_path)
-    if saved_rows:
+    if saved_rows or force:
         OperationManager(db_path).refresh_ticker(
             int(ticker["id"]),
             asset_type=ticker["asset_type"],
+            force=force,
         )
     return saved_rows
 

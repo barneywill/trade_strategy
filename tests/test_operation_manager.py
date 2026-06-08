@@ -99,6 +99,46 @@ def test_operation_manager_caches_and_invalidates_operations(tmp_path):
     assert strategy.calls == 3
 
 
+def test_operation_manager_force_bypasses_operation_cache(tmp_path):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    database.init_db(db_path)
+    ticker_id = database.add_ticker("GLDM", "GLDM", "stock", path=db_path)
+    history = pd.DataFrame(
+        {
+            "Open": [10],
+            "High": [11],
+            "Low": [9],
+            "Close": [10],
+            "Adj Close": [10],
+            "Volume": [1000],
+        },
+        index=pd.to_datetime(["2026-06-05"]),
+    )
+    database.save_history(ticker_id, history, db_path)
+    strategy = CountingStrategy()
+    manager = OperationManager(db_path)
+
+    manager.operations_for(
+        ticker_id,
+        "counting",
+        strategy,
+        database.load_history(ticker_id, db_path),
+        {"value": 1},
+    )
+    manager.operations_for(
+        ticker_id,
+        "counting",
+        strategy,
+        database.load_history(ticker_id, db_path),
+        {"value": 1},
+        force=True,
+    )
+
+    assert strategy.calls == 2
+    rows = database.load_strategy_operations(ticker_id, "counting", db_path)
+    assert rows[-1]["detail"] == "call 2"
+
+
 def test_refresh_ticker_uses_completed_history_for_non_turtle_strategies(
     tmp_path,
     monkeypatch,
@@ -222,6 +262,59 @@ def test_realtime_candidates_only_include_turtle_strategy(tmp_path):
 
     assert set(manager.realtime_operation_candidates(ticker_id, 101.5, configs)) == {
         "turtle_breakout"
+    }
+
+
+def test_turtle_realtime_candidate_can_enter_and_add_multiple_units_same_day(tmp_path):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    database.init_db(db_path)
+    ticker_id = database.add_ticker("QQQ", "QQQ", "stock", path=db_path)
+    dates = pd.date_range("2026-05-01", periods=30, freq="D")
+    history = pd.DataFrame(
+        {
+            "Open": [100] * 30,
+            "High": [101] * 30,
+            "Low": [99] * 30,
+            "Close": [100] * 30,
+            "Adj Close": [100] * 30,
+            "Volume": [1000] * 30,
+        },
+        index=dates,
+    )
+    database.save_history(ticker_id, history, db_path)
+    manager = OperationManager(db_path)
+    params = {
+        **STRATEGIES["turtle_breakout"].default_params,
+        "entry_window": 20,
+        "exit_window": 10,
+        "atr_window": 20,
+        "max_units": 4,
+        "use_ma_filter": False,
+    }
+    configs = {
+        "turtle_breakout": {"enabled": True, "params": params},
+        "ema_crossover": {
+            "enabled": False,
+            "params": STRATEGIES["ema_crossover"].default_params,
+        },
+        "macd_trend_following": {
+            "enabled": False,
+            "params": STRATEGIES["macd_trend_following"].default_params,
+        },
+    }
+
+    assert manager.realtime_operation_candidates(
+        ticker_id,
+        107.0,
+        configs,
+        date(2026, 5, 31),
+    ) == {
+        "turtle_breakout": [
+            RealtimeOperationCandidate(LONG, ENTRY),
+            RealtimeOperationCandidate(LONG, ADD_POSITION, 102.0),
+            RealtimeOperationCandidate(LONG, ADD_POSITION, 103.0),
+            RealtimeOperationCandidate(LONG, ADD_POSITION, 104.0),
+        ]
     }
 
 

@@ -121,6 +121,7 @@ needed volatility context, while still respecting per-unit notional caps.
 
 The Common section on the Strategies page includes:
 
+- Page style, `light` or `dark`
 - Default group tickers
 - Realtime trading data update
 - Realtime update frequency, default `300` seconds

@@ -5,12 +5,41 @@
   --line: #d9dee7;
   --surface: #ffffff;
   --page: #f5f7fa;
+  --control: #ffffff;
+  --control-hover: #ffffff;
+  --table-head: #f9fafc;
+  --button-secondary-hover: #e8f2ef;
+  --danger-soft: #fff1f0;
+  --marker-ring: #ffffff;
+  --chart-exit: #111827;
   --accent: #16615a;
   --accent-strong: #104c47;
   --danger: #b42318;
   --warning: #8a5b00;
   --success: #137333;
   --hold: #4b5563;
+}
+
+body[data-page-style="dark"] {
+  color-scheme: dark;
+  --ink: #e7edf4;
+  --muted: #9ca8b7;
+  --line: #334155;
+  --surface: #16202c;
+  --page: #0d1117;
+  --control: #111827;
+  --control-hover: #1d2938;
+  --table-head: #111827;
+  --button-secondary-hover: #17332f;
+  --danger-soft: #341b1d;
+  --marker-ring: #16202c;
+  --chart-exit: #e7edf4;
+  --accent: #2dd4bf;
+  --accent-strong: #14b8a6;
+  --danger: #f87171;
+  --warning: #fbbf24;
+  --success: #4ade80;
+  --hold: #94a3b8;
 }
 
 * {
@@ -36,7 +65,7 @@ a {
   gap: 24px;
   padding: 20px clamp(18px, 5vw, 56px);
   border-bottom: 1px solid var(--line);
-  background: #fff;
+  background: var(--surface);
 }
 
 .brand {
@@ -65,7 +94,7 @@ a {
 .nav-form button {
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #fff;
+  background: var(--control);
   color: var(--ink);
   padding: 8px 12px;
   text-decoration: none;
@@ -83,7 +112,7 @@ a {
 .nav a:hover,
 .nav-form button:hover {
   border-color: var(--accent);
-  background: #fff;
+  background: var(--control-hover);
   color: var(--accent);
 }
 
@@ -106,7 +135,7 @@ a {
   border: 1px solid var(--line);
   border-left: 5px solid var(--accent);
   border-radius: 6px;
-  background: #fff;
+  background: var(--surface);
   padding: 12px 14px;
   font-weight: 650;
 }
@@ -156,7 +185,7 @@ select {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #fff;
+  background: var(--control);
   color: var(--ink);
   font: inherit;
   padding: 8px 10px;
@@ -185,22 +214,22 @@ button:hover {
 }
 
 button.secondary {
-  background: #fff;
+  background: var(--control);
   color: var(--accent);
 }
 
 button.secondary:hover {
-  background: #e8f2ef;
+  background: var(--button-secondary-hover);
 }
 
 button.danger {
   border-color: var(--danger);
-  background: #fff;
+  background: var(--control);
   color: var(--danger);
 }
 
 button.danger:hover {
-  background: #fff1f0;
+  background: var(--danger-soft);
 }
 
 button.compact {
@@ -223,7 +252,7 @@ button.compact {
 }
 
 .button-link.secondary {
-  background: #fff;
+  background: var(--control);
   color: var(--accent);
 }
 
@@ -328,14 +357,14 @@ h2 {
   gap: 10px;
   min-height: 42px;
   border-color: var(--line);
-  background: #fff;
+  background: var(--control);
   color: var(--ink);
 }
 
 .group-tab:hover,
 .group-tab.active {
   border-color: var(--accent);
-  background: #e8f2ef;
+  background: var(--button-secondary-hover);
   color: var(--accent);
 }
 
@@ -365,7 +394,7 @@ td {
 }
 
 th {
-  background: #f9fafc;
+  background: var(--table-head);
   color: var(--muted);
   font-size: 0.78rem;
   letter-spacing: 0;
@@ -432,7 +461,7 @@ td span {
   display: inline-block;
   width: 9px;
   height: 9px;
-  border: 2px solid #fff;
+  border: 2px solid var(--marker-ring);
   border-radius: 50%;
   background: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
@@ -659,7 +688,7 @@ td.actions.ticker-actions {
 }
 
 .chart-dot {
-  stroke: #fff;
+  stroke: var(--marker-ring);
   stroke-width: 2;
 }
 
@@ -672,7 +701,7 @@ td.actions.ticker-actions {
 }
 
 .chart-dot.exit {
-  fill: #111827;
+  fill: var(--chart-exit);
 }
 
 .chart-label {
@@ -771,7 +800,7 @@ td.actions.ticker-actions {
   align-self: end;
   border: 1px solid var(--line);
   border-radius: 6px;
-  background: #fff;
+  background: var(--control);
   padding: 8px 10px;
 }
 
