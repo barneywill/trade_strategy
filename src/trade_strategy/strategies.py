@@ -241,7 +241,7 @@ class EMACrossoverStrategy(TradeStrategy):
             )
 
             if current_direction == LONG:
-                if crossed_short or not long_allowed:
+                if crossed_short:
                     operations.append(
                         _make_operation(
                             trade_date,
@@ -270,7 +270,7 @@ class EMACrossoverStrategy(TradeStrategy):
                 continue
 
             if current_direction == SHORT:
-                if crossed_long or not short_allowed:
+                if crossed_long:
                     operations.append(
                         _make_operation(
                             trade_date,

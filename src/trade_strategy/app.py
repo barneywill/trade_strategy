@@ -23,7 +23,10 @@ from .market_data import (
     fetch_metadata,
     normalize_symbol,
 )
-from .market_calendar import latest_completed_data_date
+from .market_calendar import (
+    latest_completed_data_date,
+    is_us_stock_market_open
+)
 from .logging_config import DEFAULT_LOG_DIR, configure_file_logging
 from .operation_manager import OperationManager
 from .refresher import (
@@ -129,6 +132,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/")
     def dashboard():
+        stock_market_open = is_us_stock_market_open()
         tickers = database.list_tickers(db_path)
         configs = database.list_strategy_configs(db_path)
         saved_common_params = common_params(configs)
@@ -144,6 +148,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 saved_common_params.get("enable_realtime_updates", False)
                 and realtime_price is not None
             )
+            compare_to_latest_close = False if ticker["asset_type"] == "stock" and not stock_market_open else use_realtime_price
             current_price = (
                 realtime_price["price"]
                 if use_realtime_price
@@ -153,7 +158,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                 current_price,
                 recent_closes.get(ticker_id, []),
                 ticker["asset_type"],
-                use_realtime_price,
+                compare_to_latest_close,
             )
             strategy_signals = evaluate_strategies(
                 cached_operations.get(ticker_id, {}),
@@ -572,7 +577,7 @@ def calculate_daily_change_pct(
     change_pct = ((float(current_price) - previous_close) / previous_close) * 100.0
 
     # Filter provider glitches (for example sudden unit/currency shifts) from dashboard output.
-    max_abs_change = 40.0 if asset_type == "crypto" else 25.0
+    max_abs_change = 50.0 if asset_type == "crypto" else 30.0
     if abs(change_pct) > max_abs_change:
         return None
 
