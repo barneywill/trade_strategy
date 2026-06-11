@@ -162,6 +162,11 @@ def test_refresh_ticker_uses_completed_history_for_non_turtle_strategies(
     turtle_strategy = CountingStrategy()
     monkeypatch.setattr(
         operation_manager_module,
+        "latest_completed_data_date",
+        lambda asset_type: date(2026, 6, 7),
+    )
+    monkeypatch.setattr(
+        operation_manager_module,
         "STRATEGIES",
         {
             "ema_crossover": ema_strategy,

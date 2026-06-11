@@ -4,6 +4,7 @@ import hmac
 import json
 import logging
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -25,7 +26,7 @@ from .market_data import (
 )
 from .market_calendar import (
     latest_completed_data_date,
-    is_us_stock_market_open
+    is_us_stock_market_open,
 )
 from .logging_config import DEFAULT_LOG_DIR, configure_file_logging
 from .operation_manager import OperationManager
@@ -136,6 +137,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
         tickers = database.list_tickers(db_path)
         configs = database.list_strategy_configs(db_path)
         saved_common_params = common_params(configs)
+        timezone_offset = parse_timezone_offset(
+            saved_common_params.get("timezone_offset", "+0")
+        )
         realtime_prices = database.list_current_prices(db_path)
         recent_closes = database.list_recent_closes(db_path)
         cached_operations = database.list_latest_strategy_operations(db_path)
@@ -170,8 +174,13 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     "ticker": ticker,
                     "current_price": current_price,
                     "daily_change_pct": daily_change_pct,
-                    "current_price_updated_at": (
-                        realtime_price["updated_at"] if realtime_price is not None else None
+                    "current_price_updated_at": format_dashboard_timestamp(
+                        realtime_price["updated_at"] if realtime_price is not None else None,
+                        timezone_offset,
+                    ),
+                    "last_downloaded_at": format_dashboard_timestamp(
+                        ticker["last_downloaded_at"],
+                        timezone_offset,
                     ),
                     "strategy_signals": strategy_signals,
                 }
@@ -772,6 +781,36 @@ def page_style(configs: dict[str, dict[str, Any]]) -> str:
     if style not in {"light", "dark"}:
         return "light"
     return style
+
+
+def parse_timezone_offset(value) -> float:
+    try:
+        offset = float(str(value).strip().replace("UTC", ""))
+    except (TypeError, ValueError):
+        return 0.0
+    return min(14.0, max(-12.0, offset))
+
+
+def timezone_offset_label(offset: float) -> str:
+    sign = "+" if offset >= 0 else "-"
+    absolute = abs(offset)
+    if absolute.is_integer():
+        return f"UTC{sign}{int(absolute)}"
+    hours = int(absolute)
+    minutes = round((absolute - hours) * 60)
+    return f"UTC{sign}{hours}:{minutes:02d}"
+
+
+def format_dashboard_timestamp(value, timezone_offset: float) -> str | None:
+    if not value:
+        return None
+    raw_value = str(value)
+    try:
+        timestamp = datetime.fromisoformat(raw_value)
+    except ValueError:
+        return raw_value
+    timestamp += timedelta(hours=timezone_offset)
+    return f"{timestamp:%Y-%m-%d %H:%M:%S} {timezone_offset_label(timezone_offset)}"
 
 
 def read_strategy_params(strategy: TradeStrategy, form) -> dict[str, Any]:

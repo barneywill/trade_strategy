@@ -175,6 +175,8 @@ def test_strategy_settings_renders_and_saves_common_realtime_parameters(tmp_path
     assert b"Common" in response.data
     assert b"common.page_style" in response.data
     assert b"value=\"light\"" in response.data
+    assert b"common.timezone_offset" in response.data
+    assert b"value=\"+0\"" in response.data
     assert b"common.default_group_symbols" in response.data
     assert b"value=\"BTC, ETH, SOL, QQQ, SPY\"" in response.data
     assert b"common.enable_realtime_updates" in response.data
@@ -190,6 +192,7 @@ def test_strategy_settings_renders_and_saves_common_realtime_parameters(tmp_path
         "/strategies",
         data={
             "common.page_style": "dark",
+            "common.timezone_offset": "+8",
             "common.default_group_symbols": "QQQ, SPY, BTC",
             "common.enable_realtime_updates": "on",
             "common.realtime_update_frequency": "120",
@@ -214,6 +217,7 @@ def test_strategy_settings_renders_and_saves_common_realtime_parameters(tmp_path
     assert response.status_code == 302
     config = database.list_strategy_configs(db_path)[COMMON_CONFIG_NAME]
     assert config["params"]["page_style"] == "dark"
+    assert config["params"]["timezone_offset"] == "+8"
     assert config["params"]["default_group_symbols"] == "QQQ, SPY, BTC"
     assert config["params"]["enable_realtime_updates"] is True
     assert config["params"]["realtime_update_frequency"] == 120
@@ -233,6 +237,7 @@ def test_strategy_settings_renders_and_saves_common_realtime_parameters(tmp_path
         "/strategies",
         data={
             "common.page_style": "dark",
+            "common.timezone_offset": "+8",
             "common.default_group_symbols": "QQQ, SPY, BTC",
             "common.enable_realtime_updates": "on",
             "common.realtime_update_frequency": "120",
@@ -303,6 +308,61 @@ def test_dashboard_uses_cached_realtime_price_when_enabled(tmp_path):
     assert b"data-group-panel=\"latest-operations\"" in response.data
     assert b"data-group-panel=\"us-stock\"" in response.data
     assert b"hidden" in response.data
+    assert b"data-dashboard-auto-refresh" in response.data
+    assert b"<option value=\"0\">Never</option>" in response.data
+    assert b"<option value=\"300000\">5 min</option>" in response.data
+    assert b"<option value=\"600000\">10 min</option>" in response.data
+    assert b"tradeStrategyDashboardAutoRefreshMs" in response.data
+    assert b"window.location.reload()" in response.data
+
+
+def test_dashboard_displays_times_with_common_timezone_offset(tmp_path):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": db_path,
+            "AUTO_REFRESH_ENABLED": False,
+        }
+    )
+    ticker_id = database.add_ticker("SPY", "SPY", "stock", path=db_path)
+    history = pd.DataFrame(
+        {
+            "Open": [100],
+            "High": [101],
+            "Low": [99],
+            "Close": [100],
+            "Adj Close": [100],
+            "Volume": [1000],
+        },
+        index=pd.date_range("2025-01-02", periods=1),
+    )
+    database.save_history(ticker_id, history, db_path)
+    database.save_current_price(ticker_id, 123.45, db_path)
+    with database.connect(db_path) as connection:
+        connection.execute(
+            "UPDATE current_prices SET updated_at = ? WHERE ticker_id = ?",
+            ("2026-06-11 02:30:00", ticker_id),
+        )
+        connection.execute(
+            "UPDATE tickers SET last_downloaded_at = ? WHERE id = ?",
+            ("2026-06-11 01:15:00", ticker_id),
+        )
+    database.update_strategy_config(
+        COMMON_CONFIG_NAME,
+        True,
+        {
+            "enable_realtime_updates": True,
+            "timezone_offset": "+8",
+        },
+        db_path,
+    )
+
+    response = app.test_client().get("/")
+
+    assert response.status_code == 200
+    assert b"Updated 2026-06-11 10:30:00 UTC+8" in response.data
+    assert b"Downloaded 2026-06-11 09:15:00 UTC+8" in response.data
 
 
 def test_dashboard_links_tickers_to_yahoo_charts(tmp_path):

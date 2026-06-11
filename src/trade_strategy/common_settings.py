@@ -13,6 +13,12 @@ COMMON_PARAMETER_SPECS = (
         options=("light", "dark"),
     ),
     ParameterSpec(
+        "timezone_offset",
+        "Timezone offset",
+        "+0",
+        kind="text",
+    ),
+    ParameterSpec(
         "default_group_symbols",
         "Default group tickers",
         "BTC, ETH, SOL, QQQ, SPY",

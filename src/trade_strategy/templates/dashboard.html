@@ -66,7 +66,7 @@ https://finance.yahoo.com/chart/{{ ticker.symbol }}
             <td>
               {% if ticker.last_trade_date %}
                 <strong>{{ ticker.last_trade_date }}</strong>
-                <span>Downloaded {{ ticker.last_downloaded_at or "pending" }}</span>
+                <span>Downloaded {{ row.last_downloaded_at or "pending" }}</span>
               {% else %}
                 <span class="muted">No history</span>
               {% endif %}
@@ -142,6 +142,15 @@ https://finance.yahoo.com/chart/{{ ticker.symbol }}
   <form action="{{ url_for('refresh_all_tickers') }}" method="post">
     <button class="secondary" type="submit">Refresh all</button>
   </form>
+
+  <label class="dashboard-auto-refresh">
+    Auto-refresh
+    <select data-dashboard-auto-refresh>
+      <option value="0">Never</option>
+      <option value="300000">5 min</option>
+      <option value="600000">10 min</option>
+    </select>
+  </label>
 {% endmacro %}
 
 {% block content %}
@@ -248,4 +257,36 @@ https://finance.yahoo.com/chart/{{ ticker.symbol }}
       </aside>
     </div>
   {% endif %}
+  <script>
+    (() => {
+      const autoRefreshSelect = document.querySelector("[data-dashboard-auto-refresh]");
+      const storageKey = "tradeStrategyDashboardAutoRefreshMs";
+      let autoRefreshTimer = null;
+
+      if (!autoRefreshSelect) return;
+
+      const savedInterval = localStorage.getItem(storageKey);
+      if ([...autoRefreshSelect.options].some((option) => option.value === savedInterval)) {
+        autoRefreshSelect.value = savedInterval;
+      }
+
+      function scheduleAutoRefresh() {
+        if (autoRefreshTimer) {
+          clearTimeout(autoRefreshTimer);
+          autoRefreshTimer = null;
+        }
+
+        const intervalMs = Number(autoRefreshSelect.value);
+        localStorage.setItem(storageKey, autoRefreshSelect.value);
+        if (intervalMs > 0) {
+          autoRefreshTimer = setTimeout(() => {
+            window.location.reload();
+          }, intervalMs);
+        }
+      }
+
+      autoRefreshSelect.addEventListener("change", scheduleAutoRefresh);
+      scheduleAutoRefresh();
+    })();
+  </script>
 {% endblock %}
