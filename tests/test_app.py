@@ -96,10 +96,10 @@ def test_default_group_symbol_parser_normalizes_and_deduplicates():
     ]
 
 
-def test_realtime_daily_change_compares_to_latest_completed_close(monkeypatch):
+def test_realtime_daily_change_compares_to_close_before_realtime_date(monkeypatch):
     monkeypatch.setattr(
-        "trade_strategy.app.latest_completed_data_date",
-        lambda asset_type: pd.Timestamp("2025-06-10").date(),
+        "trade_strategy.app.current_realtime_data_date",
+        lambda asset_type: pd.Timestamp("2025-06-11").date(),
     )
     recent_closes = [
         {"trade_date": "2025-06-11", "close": 110},
@@ -107,7 +107,7 @@ def test_realtime_daily_change_compares_to_latest_completed_close(monkeypatch):
         {"trade_date": "2025-06-09", "close": 80},
     ]
 
-    assert calculate_daily_change_pct(105, recent_closes, "stock", True) == 5.0
+    assert calculate_daily_change_pct(105, None, recent_closes, "stock", True) == 5.0
 
 
 def test_access_password_gate_requires_login_when_configured(tmp_path):
@@ -279,10 +279,7 @@ def test_strategy_settings_renders_and_saves_common_realtime_parameters(tmp_path
     assert config["params"]["telegram_bot_token"] == "123:abc"
 
 
-def test_dashboard_uses_cached_realtime_price_when_enabled_and_stock_market_open(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr("trade_strategy.app.is_us_stock_market_open", lambda: True)
+def test_dashboard_uses_cached_realtime_price_when_enabled(tmp_path):
     db_path = tmp_path / "trade_strategy.sqlite3"
     app = create_app(
         {
@@ -334,10 +331,9 @@ def test_dashboard_uses_cached_realtime_price_when_enabled_and_stock_market_open
     assert b"window.location.reload()" in response.data
 
 
-def test_dashboard_uses_last_close_for_stock_when_market_is_closed(
-    tmp_path, monkeypatch
+def test_dashboard_uses_cached_realtime_price_for_stock_when_market_is_closed(
+    tmp_path,
 ):
-    monkeypatch.setattr("trade_strategy.app.is_us_stock_market_open", lambda: False)
     db_path = tmp_path / "trade_strategy.sqlite3"
     app = create_app(
         {
@@ -373,13 +369,11 @@ def test_dashboard_uses_last_close_for_stock_when_market_is_closed(
     response = app.test_client().get("/")
 
     assert response.status_code == 200
-    assert b"100.00" in response.data
-    assert b"123.45" not in response.data
-    assert b"Updated" not in response.data
+    assert b"123.45" in response.data
+    assert b"Updated" in response.data
 
 
-def test_dashboard_displays_times_with_common_timezone_offset(tmp_path, monkeypatch):
-    monkeypatch.setattr("trade_strategy.app.is_us_stock_market_open", lambda: True)
+def test_dashboard_displays_times_with_common_timezone_offset(tmp_path):
     db_path = tmp_path / "trade_strategy.sqlite3"
     app = create_app(
         {

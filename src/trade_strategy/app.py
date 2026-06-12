@@ -25,8 +25,8 @@ from .market_data import (
     normalize_symbol,
 )
 from .market_calendar import (
+    current_realtime_data_date,
     latest_completed_data_date,
-    is_us_stock_market_open,
 )
 from .logging_config import DEFAULT_LOG_DIR, configure_file_logging
 from .operation_manager import OperationManager
@@ -133,7 +133,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
 
     @app.get("/")
     def dashboard():
-        stock_market_open = is_us_stock_market_open()
         tickers = database.list_tickers(db_path)
         configs = database.list_strategy_configs(db_path)
         saved_common_params = common_params(configs)
@@ -151,7 +150,6 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             use_realtime_price = (
                 saved_common_params.get("enable_realtime_updates", False)
                 and realtime_price is not None
-                and (ticker["asset_type"] != "stock" or stock_market_open)
             )
             compare_to_latest_close = use_realtime_price
             current_price = (
@@ -161,6 +159,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             )
             daily_change_pct = calculate_daily_change_pct(
                 current_price,
+                realtime_price['updated_at'] if use_realtime_price else None,
                 recent_closes.get(ticker_id, []),
                 ticker["asset_type"],
                 compare_to_latest_close,
@@ -558,6 +557,7 @@ def strategy_history_for_view(history, strategy_name: str, asset_type: str):
 
 def calculate_daily_change_pct(
     current_price: float | None,
+    current_price_updated_at: str | None,
     recent_closes,
     asset_type: str,
     compare_to_latest_close: bool = False,
@@ -566,10 +566,10 @@ def calculate_daily_change_pct(
         return None
 
     if compare_to_latest_close:
-        completed_date = latest_completed_data_date(asset_type).isoformat()
+        realtime_date = current_price_updated_at[:10] if current_price_updated_at else current_realtime_data_date(asset_type).isoformat()
         previous_close = None
         for close in recent_closes:
-            if close["trade_date"] <= completed_date:
+            if close["trade_date"] < realtime_date:
                 previous_close = float(close["close"])
                 break
     else:
