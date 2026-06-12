@@ -82,6 +82,31 @@ def is_us_stock_market_open(now: datetime | None = None) -> bool:
     return time(9, 30) <= eastern.time() < time(16, 0)
 
 
+def is_us_stock_realtime_update_window_open(
+    now: datetime | None = None,
+    post_close_seconds: int = 0,
+) -> bool:
+    current = now or utc_now()
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+
+    eastern = current.astimezone(ZoneInfo("America/New_York"))
+    if not is_us_stock_trading_day(eastern.date()):
+        return False
+
+    session_start = datetime.combine(
+        eastern.date(),
+        time(9, 30),
+        tzinfo=ZoneInfo("America/New_York"),
+    )
+    session_end = datetime.combine(
+        eastern.date(),
+        time(16, 0),
+        tzinfo=ZoneInfo("America/New_York"),
+    ) + timedelta(seconds=max(0, int(post_close_seconds)))
+    return session_start <= eastern < session_end
+
+
 def previous_us_stock_trading_day(day: date) -> date:
     candidate = day
     while not is_us_stock_trading_day(candidate):

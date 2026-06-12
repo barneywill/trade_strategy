@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from trade_strategy.market_calendar import (
     is_us_stock_market_open,
+    is_us_stock_realtime_update_window_open,
     is_us_stock_trading_day,
     latest_completed_data_date,
     previous_us_stock_trading_day,
@@ -45,6 +46,16 @@ def test_us_stock_market_open_uses_regular_session_hours():
     assert is_us_stock_market_open(open_time)
     assert not is_us_stock_market_open(before_open)
     assert not is_us_stock_market_open(holiday)
+
+
+def test_us_stock_realtime_update_window_extends_after_close():
+    during_market = datetime(2025, 7, 3, 19, 59, tzinfo=timezone.utc)
+    post_close_grace = datetime(2025, 7, 3, 20, 4, tzinfo=timezone.utc)
+    after_grace = datetime(2025, 7, 3, 20, 6, tzinfo=timezone.utc)
+
+    assert is_us_stock_realtime_update_window_open(during_market, 300)
+    assert is_us_stock_realtime_update_window_open(post_close_grace, 300)
+    assert not is_us_stock_realtime_update_window_open(after_grace, 300)
 
 
 def test_seconds_until_next_utc_time_supports_minutes():

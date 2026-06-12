@@ -279,7 +279,10 @@ def test_strategy_settings_renders_and_saves_common_realtime_parameters(tmp_path
     assert config["params"]["telegram_bot_token"] == "123:abc"
 
 
-def test_dashboard_uses_cached_realtime_price_when_enabled(tmp_path):
+def test_dashboard_uses_cached_realtime_price_when_enabled_and_stock_market_open(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("trade_strategy.app.is_us_stock_market_open", lambda: True)
     db_path = tmp_path / "trade_strategy.sqlite3"
     app = create_app(
         {
@@ -331,7 +334,52 @@ def test_dashboard_uses_cached_realtime_price_when_enabled(tmp_path):
     assert b"window.location.reload()" in response.data
 
 
-def test_dashboard_displays_times_with_common_timezone_offset(tmp_path):
+def test_dashboard_uses_last_close_for_stock_when_market_is_closed(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("trade_strategy.app.is_us_stock_market_open", lambda: False)
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    app = create_app(
+        {
+            "TESTING": True,
+            "DATABASE": db_path,
+            "AUTO_REFRESH_ENABLED": False,
+        }
+    )
+    ticker_id = database.add_ticker("SPY", "SPY", "stock", path=db_path)
+    history = pd.DataFrame(
+        {
+            "Open": [100],
+            "High": [101],
+            "Low": [99],
+            "Close": [100],
+            "Adj Close": [100],
+            "Volume": [1000],
+        },
+        index=pd.date_range("2025-01-02", periods=1),
+    )
+    database.save_history(ticker_id, history, db_path)
+    database.save_current_price(ticker_id, 123.45, db_path)
+    database.update_strategy_config(
+        COMMON_CONFIG_NAME,
+        True,
+        {
+            "enable_realtime_updates": True,
+            "realtime_update_frequency": 300,
+        },
+        db_path,
+    )
+
+    response = app.test_client().get("/")
+
+    assert response.status_code == 200
+    assert b"100.00" in response.data
+    assert b"123.45" not in response.data
+    assert b"Updated" not in response.data
+
+
+def test_dashboard_displays_times_with_common_timezone_offset(tmp_path, monkeypatch):
+    monkeypatch.setattr("trade_strategy.app.is_us_stock_market_open", lambda: True)
     db_path = tmp_path / "trade_strategy.sqlite3"
     app = create_app(
         {

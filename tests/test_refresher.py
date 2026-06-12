@@ -75,6 +75,11 @@ def test_realtime_refresh_batches_eligible_tickers(tmp_path, monkeypatch):
         index=pd.to_datetime(["2026-06-07"]),
     )
     monkeypatch.setattr(refresher, "is_us_stock_market_open", lambda: True)
+    monkeypatch.setattr(
+        refresher,
+        "is_us_stock_realtime_update_window_open",
+        lambda post_close_seconds=0: True,
+    )
 
     def fetch_current_prices(symbols):
         seen_batches.append(symbols)
@@ -237,6 +242,11 @@ def test_realtime_refresh_skips_stock_candles_when_market_is_closed(
     calls = []
 
     monkeypatch.setattr(refresher, "is_us_stock_market_open", lambda: False)
+    monkeypatch.setattr(
+        refresher,
+        "is_us_stock_realtime_update_window_open",
+        lambda post_close_seconds=0: False,
+    )
     monkeypatch.setattr(refresher, "fetch_current_prices", lambda symbols: {})
     monkeypatch.setattr(refresher, "fetch_current_price", lambda symbol: 500.0)
 
@@ -252,6 +262,53 @@ def test_realtime_refresh_skips_stock_candles_when_market_is_closed(
     assert result == {"QQQ": None}
     assert calls == []
     assert history.empty
+
+
+def test_realtime_refresh_saves_post_close_stock_price_as_latest_close(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "trade_strategy.sqlite3"
+    database.init_db(db_path)
+    ticker_id = database.add_ticker("QQQ", "QQQ", "stock", path=db_path)
+    database.update_strategy_config(
+        COMMON_CONFIG_NAME,
+        True,
+        {
+            **COMMON_DEFAULTS,
+            "realtime_update_frequency": 300,
+        },
+        db_path,
+    )
+
+    monkeypatch.setattr(refresher, "is_us_stock_market_open", lambda: False)
+    monkeypatch.setattr(
+        refresher,
+        "is_us_stock_realtime_update_window_open",
+        lambda post_close_seconds=0: post_close_seconds == 300,
+    )
+    monkeypatch.setattr(
+        refresher,
+        "current_realtime_data_date",
+        lambda asset_type: date(2026, 6, 11),
+    )
+    monkeypatch.setattr(refresher, "fetch_current_prices", lambda symbols: {"QQQ": 500.0})
+    monkeypatch.setattr(
+        refresher,
+        "fetch_current_price",
+        lambda symbol: (_ for _ in ()).throw(AssertionError("fallback not expected")),
+    )
+    monkeypatch.setattr(
+        refresher.OperationManager,
+        "realtime_operation_candidates",
+        lambda self, ticker_id, price, configs=None, realtime_date=None: {},
+    )
+
+    result = refresher.refresh_realtime_prices(db_path)
+    history = database.load_history(ticker_id, db_path)
+
+    assert result == {"QQQ": 500.0}
+    assert history.index[-1].date().isoformat() == "2026-06-11"
+    assert history["close"].iloc[-1] == 500.0
 
 
 def test_realtime_refresh_sends_telegram_for_new_operation_once(tmp_path, monkeypatch):

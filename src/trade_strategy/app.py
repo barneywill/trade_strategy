@@ -151,8 +151,9 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
             use_realtime_price = (
                 saved_common_params.get("enable_realtime_updates", False)
                 and realtime_price is not None
+                and (ticker["asset_type"] != "stock" or stock_market_open)
             )
-            compare_to_latest_close = False if ticker["asset_type"] == "stock" and not stock_market_open else use_realtime_price
+            compare_to_latest_close = use_realtime_price
             current_price = (
                 realtime_price["price"]
                 if use_realtime_price
@@ -175,7 +176,7 @@ def create_app(test_config: dict[str, Any] | None = None) -> Flask:
                     "current_price": current_price,
                     "daily_change_pct": daily_change_pct,
                     "current_price_updated_at": format_dashboard_timestamp(
-                        realtime_price["updated_at"] if realtime_price is not None else None,
+                        realtime_price["updated_at"] if use_realtime_price else None,
                         timezone_offset,
                     ),
                     "last_downloaded_at": format_dashboard_timestamp(

@@ -13,6 +13,7 @@ from .common_settings import COMMON_DEFAULTS, common_params
 from .market_calendar import (
     current_realtime_data_date,
     is_us_stock_market_open,
+    is_us_stock_realtime_update_window_open,
     latest_completed_data_date,
     seconds_until_next_utc_time,
 )
@@ -166,10 +167,18 @@ def refresh_realtime_prices(db_path: Path) -> dict[str, float | None]:
     tickers = database.list_tickers(db_path)
     eligible_tickers = []
     configs = database.list_strategy_configs(db_path)
+    params = common_params(configs)
+    update_frequency = max(
+        30,
+        int(params.get("realtime_update_frequency", COMMON_DEFAULTS["realtime_update_frequency"])),
+    )
+    stock_realtime_window_open = is_us_stock_realtime_update_window_open(
+        post_close_seconds=update_frequency
+    )
     operation_manager = OperationManager(db_path)
 
     for ticker in tickers:
-        if ticker["asset_type"] == "stock" and not stock_market_open:
+        if ticker["asset_type"] == "stock" and not stock_realtime_window_open:
             results[ticker["symbol"]] = None
             continue
         eligible_tickers.append(ticker)
@@ -186,6 +195,8 @@ def refresh_realtime_prices(db_path: Path) -> dict[str, float | None]:
             database.save_current_price(ticker["id"], price, db_path)
         if price is None:
             continue
+        if ticker["asset_type"] == "stock" and not stock_market_open:
+            database.save_realtime_candle(ticker["id"], realtime_date, price, db_path)
         operation_candidates = operation_manager.realtime_operation_candidates(
             int(ticker["id"]),
             price,
