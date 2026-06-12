@@ -26,6 +26,17 @@ def test_latest_completed_data_date_uses_stock_trading_calendar():
     assert latest_completed_data_date("crypto", now).isoformat() == "2025-07-04"
 
 
+def test_latest_completed_stock_data_date_uses_new_york_session_boundary():
+    during_market = datetime(2025, 6, 11, 18, 0, tzinfo=timezone.utc)
+    after_close_before_utc_midnight = datetime(2025, 6, 11, 21, 0, tzinfo=timezone.utc)
+
+    assert latest_completed_data_date("stock", during_market).isoformat() == "2025-06-10"
+    assert (
+        latest_completed_data_date("stock", after_close_before_utc_midnight).isoformat()
+        == "2025-06-11"
+    )
+
+
 def test_us_stock_market_open_uses_regular_session_hours():
     open_time = datetime(2025, 7, 3, 14, 0, tzinfo=timezone.utc)
     before_open = datetime(2025, 7, 3, 13, 0, tzinfo=timezone.utc)

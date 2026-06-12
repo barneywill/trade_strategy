@@ -18,6 +18,7 @@ fake_market_data.normalize_symbol = lambda symbol, asset_type: (symbol, symbol)
 sys.modules["trade_strategy.market_data"] = fake_market_data
 
 from trade_strategy.app import (  # noqa: E402
+    calculate_daily_change_pct,
     create_app,
     group_dashboard_rows,
     parse_default_group_symbols,
@@ -93,6 +94,20 @@ def test_default_group_symbol_parser_normalizes_and_deduplicates():
         "SOL",
         "SPY",
     ]
+
+
+def test_realtime_daily_change_compares_to_latest_completed_close(monkeypatch):
+    monkeypatch.setattr(
+        "trade_strategy.app.latest_completed_data_date",
+        lambda asset_type: pd.Timestamp("2025-06-10").date(),
+    )
+    recent_closes = [
+        {"trade_date": "2025-06-11", "close": 110},
+        {"trade_date": "2025-06-10", "close": 100},
+        {"trade_date": "2025-06-09", "close": 80},
+    ]
+
+    assert calculate_daily_change_pct(105, recent_closes, "stock", True) == 5.0
 
 
 def test_access_password_gate_requires_login_when_configured(tmp_path):

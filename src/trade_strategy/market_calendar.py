@@ -38,11 +38,16 @@ def utc_now() -> datetime:
 
 def latest_completed_data_date(asset_type: str, now: datetime | None = None) -> date:
     current = now or utc_now()
-    candidate = current.date() - timedelta(days=1)
 
     if asset_type == "stock":
-        return previous_us_stock_trading_day(candidate)
+        if current.tzinfo is None:
+            current = current.replace(tzinfo=timezone.utc)
+        eastern = current.astimezone(ZoneInfo("America/New_York"))
+        if is_us_stock_trading_day(eastern.date()) and eastern.time() >= time(16, 0):
+            return eastern.date()
+        return previous_us_stock_trading_day(eastern.date() - timedelta(days=1))
 
+    candidate = current.date() - timedelta(days=1)
     return candidate
 
 
