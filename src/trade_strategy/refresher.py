@@ -168,9 +168,8 @@ def refresh_realtime_prices(db_path: Path) -> dict[str, float | None]:
     eligible_tickers = []
     configs = database.list_strategy_configs(db_path)
     params = common_params(configs)
-    update_frequency = max(
-        30,
-        int(params.get("realtime_update_frequency", COMMON_DEFAULTS["realtime_update_frequency"])),
+    update_frequency = _parse_realtime_update_frequency(
+        params.get("realtime_update_frequency")
     )
     stock_realtime_window_open = is_us_stock_realtime_update_window_open(
         post_close_seconds=update_frequency
@@ -254,13 +253,16 @@ def refresh_realtime_prices(db_path: Path) -> dict[str, float | None]:
 
 def _run_realtime_price_scheduler(db_path: Path, frequency_seconds: int) -> None:
     while True:
-        params = common_params(database.list_strategy_configs(db_path))
-        frequency_seconds = max(
-            30,
-            int(params.get("realtime_update_frequency", COMMON_DEFAULTS["realtime_update_frequency"])),
-        )
-        if params.get("enable_realtime_updates", False):
-            _run_job("realtime price refresh", refresh_realtime_prices, db_path)
+        try:
+            params = common_params(database.list_strategy_configs(db_path))
+            frequency_seconds = _parse_realtime_update_frequency(
+                params.get("realtime_update_frequency"),
+                frequency_seconds,
+            )
+            if params.get("enable_realtime_updates", False):
+                _run_job("realtime price refresh", refresh_realtime_prices, db_path)
+        except Exception:
+            LOGGER.exception("realtime price scheduler failed.")
         threading.Event().wait(frequency_seconds)
 
 
@@ -465,3 +467,13 @@ def _parse_daily_data_fetch_time(value) -> tuple[int, int]:
     if not 0 <= hour <= 23 or not 0 <= minute <= 59:
         return 0, 1
     return hour, minute
+
+
+def _parse_realtime_update_frequency(value, fallback: int | None = None) -> int:
+    if fallback is None:
+        fallback = COMMON_DEFAULTS["realtime_update_frequency"]
+    try:
+        frequency = int(value)
+    except (TypeError, ValueError):
+        frequency = int(fallback)
+    return max(30, frequency)

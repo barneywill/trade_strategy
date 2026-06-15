@@ -510,3 +510,11 @@ def test_daily_data_fetch_time_parser():
     assert refresher._parse_daily_data_fetch_time("23:59") == (23, 59)
     assert refresher._parse_daily_data_fetch_time("25:00") == (0, 1)
     assert refresher._parse_daily_data_fetch_time("not-a-time") == (0, 1)
+
+
+def test_realtime_update_frequency_parser_falls_back_and_clamps():
+    assert refresher._parse_realtime_update_frequency(300) == 300
+    assert refresher._parse_realtime_update_frequency("120") == 120
+    assert refresher._parse_realtime_update_frequency(10) == 30
+    assert refresher._parse_realtime_update_frequency("bad", 90) == 90
+    assert refresher._parse_realtime_update_frequency(None) == 300
